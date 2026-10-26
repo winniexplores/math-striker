@@ -1,0 +1,2187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Math Striker</title>
+  <meta name="description" content="A vertical arcade shooter where your score is your health and the enemies are numbers.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen">
+  <meta name="theme-color" content="#02060f">
+  <style>
+/* Center the portrait canvas and scale it to the window, keeping 2:3 aspect. */
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: #02060f;
+  overflow: hidden;
+  overscroll-behavior: none;       /* no pull-to-refresh while dragging */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+main {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+canvas {
+  display: block;
+  height: min(100dvh, 150vw);
+  aspect-ratio: 2 / 3;
+  background: #040a18;
+  box-shadow: 0 0 60px rgba(77, 210, 255, 0.18);
+  touch-action: none; /* stop page scroll/zoom gestures on the canvas */
+}
+
+noscript {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-family: monospace;
+}
+
+/* "Use your phone" screen shown on computers */
+#desktop-notice {
+  text-align: center;
+  color: #d3e0f5;
+  font-family: "Courier New", ui-monospace, monospace;
+  padding: 24px;
+}
+#desktop-notice[hidden] { display: none; }
+#desktop-notice h1 { font-size: 40px; margin: 0 0 24px; color: #4dd2ff; text-shadow: 0 0 18px #4dd2ff; }
+#desktop-notice h1 span { color: #ff6bd6; text-shadow: 0 0 18px #ff6bd6; }
+#desktop-notice p { font-size: 18px; margin: 8px 0; }
+canvas[hidden] { display: none; }
+
+  </style>
+</head>
+<body>
+  <main>
+    <canvas id="game" width="480" height="720" aria-label="Math Striker game canvas"></canvas>
+    <section id="desktop-notice" hidden>
+      <h1>MATH <span>STRIKER</span></h1>
+      <p>This game is built for <strong>phones</strong>.</p>
+      <p>Open this page on your phone to play.</p>
+    </section>
+  </main>
+  <noscript>Math Striker needs JavaScript enabled.</noscript>
+  <script>
+/* ====================================================================
+   MATH STRIKER - everything in one file.
+   Tip: use Ctrl+F (or the search icon) to jump to a "FILE:" marker below.
+   FILE: config.js   = numbers, pilots, colours of the pilots
+   FILE: stages.js   = the 4 stages
+   FILE: entities.js = how numbers/bullets/power-ups look
+   FILE: draw.js     = ship shapes
+   FILE: ui.js       = menu, score bar, buttons
+   ==================================================================== */
+/* ======================= FILE: config.js ======================= */
+const __config = (() => {
+  // =============================================================================
+  // config.js  -  every tunable number in one place.
+  // Change values here to rebalance the game without touching any logic.
+  // =============================================================================
+
+  const CONFIG = {
+    // --- Canvas (logical resolution; CSS scales it to fit the window) ----------
+    width: 480,
+    height: 720,
+    font: '"Courier New", ui-monospace, monospace',
+
+    // --- Stage flow -------------------------------------------------------------
+    stageDuration: 45,        // seconds per stage
+    stageClearBonus: 20,      // bonus score = this * stage number (1..4)
+    maxBombs: 5,
+
+    // --- Math rules -------------------------------------------------------------
+    maxMultiplier: 16,        // cap for the running multiplier
+    maxEffectiveMultiplier: 64, // cap after the x^2 power-up squares it
+    multiplierDecaySecs: 10,  // multiplier halves every N seconds unless you grab another xk
+    dangerPerStage: 0.35,     // every hazard hurts (1 + this*stagesCleared) times more
+    hazardPercent: 0.04,      // a size-9 hazard also takes this share of your CURRENT score
+                              // (smaller hazards take proportionally less). Keeps big scores fragile.
+    zeroPercent: 0.03,        // extra share of current score lost to a 0
+    aimedSpawnChance: 0.35,   // chance a hostile number spawns right above the player
+    zeroPenalty: 12,          // score lost when you touch a 0 (also resets multiplier)
+    negMultRate: 0.10,        // touching x(-k) costs score * rate * k ...
+    negMultMaxFraction: 0.40, // ... but never more than this share of your score
+    divSeverity: 0.40,        // touching a divisor/fraction f costs score*(1-f)*severity
+    shrinkMin: 0.6,           // ship never shrinks below 60% size
+    shrinkRecoverPerSec: 0.12,
+
+    // --- Prime Bomb -------------------------------------------------------------
+    // false: bomb wipes ALL enemy bullets, only prime-valued enemies survive.
+    // true : prime-valued bullets survive too (the strictest reading of the spec).
+    bombSparesPrimeBullets: false,
+
+    // --- Power-ups --------------------------------------------------------------
+    powerupDuration: { abs: 8, pi: 8, sq: 8 }, // seconds
+    powerupInterval: [14, 22],                 // random gap between power-up drops
+    piMagnet: { radius: 230, pull: 560 },
+
+    // --- Touch controls (rectangles are in canvas coordinates) -----------------
+    touch: {
+      dragSensitivity: 1.3,                      // ship moves this much per pixel dragged
+      bomb: { x: 8, y: 660, w: 130, h: 50 },
+      pause: { x: 420, y: 66, w: 52, h: 40 },
+    },
+
+    // --- Misc -------------------------------------------------------------------
+    lowScoreWarning: 25,      // red pulse when score is below this
+    storageKey: 'mathStriker.highScore',
+  };
+
+  // -----------------------------------------------------------------------------
+  // Playable pilots.
+  //   startScore  : your running score IS your health, so this is starting HP
+  //   lossScale   : multiplies every point you lose (0.7 = take 30% less damage)
+  //   weapon      : 'single' | 'burst' (see Player.tryFire in entities.js)
+  // -----------------------------------------------------------------------------
+  const CHARACTERS = [
+    {
+      id: 'axiom',
+      name: 'AXIOM',
+      role: 'Male Pilot',
+      color: '#4dd2ff',
+      blurb: ['Steady and reliable.', 'Takes 35% less damage', 'and starts with a', 'bigger score buffer.'],
+      stats: { Defense: 5, Mobility: 2, Burst: 2 },
+      startScore: 150,
+      lossScale: 0.65,
+      speed: 280,
+      fireCooldown: 0.16,
+      damage: 1,
+      weapon: 'single',
+      bombs: 3,
+    },
+    {
+      id: 'calcula',
+      name: 'CALCULA',
+      role: 'Female Pilot',
+      color: '#ff6bd6',
+      blurb: ['Fast and fierce.', 'Twin shots plus a', '5-way burst with 2x', 'damage every 6th volley.'],
+      stats: { Defense: 2, Mobility: 5, Burst: 5 },
+      startScore: 100,
+      lossScale: 1.0,
+      speed: 340,
+      fireCooldown: 0.15,
+      damage: 1,
+      weapon: 'burst',
+      burstEvery: 6,
+      burstDamageMult: 2,
+      bombs: 2,
+    },
+  ];
+  return { CONFIG, CHARACTERS };
+})();
+
+/* ======================= FILE: stages.js ======================= */
+const __stages = (() => {
+  // =============================================================================
+  // stages.js  -  data-driven stage definitions.
+  //
+  // To add a stage or rebalance one, edit this table. No game logic changes.
+  //
+  // Each `table` entry describes something that can spawn:
+  //   { kind: 'int',     sign: +1|-1, min, max, weight }   signed integer
+  //   { kind: 'mult',    values: [2,3,5],         weight } good multiplier
+  //   { kind: 'negmult', values: [2,3],           weight } bad  multiplier
+  //   { kind: 'zero',                             weight } bad  zero
+  //   { kind: 'div',     values: [2,3,4],         weight } bad  divisor
+  //   { kind: 'frac',    pairs: [[1,2],[3,4]],    weight } bad  fraction
+  //
+  // shooterChance : chance a hostile integer carries a gun (fires -n bullets)
+  // shooterVolley : bullets per shot (fan spread)
+  // fallSpeed     : [min, max] pixels per second
+  // =============================================================================
+
+  const STAGES = [
+    {
+      id: 1,
+      op: '+',
+      name: 'ADDITION',
+      hue: 200,
+      tagline: 'Collect the positives. Dodge the negatives.',
+      spawnInterval: 0.62,
+      fallSpeed: [70, 120],
+      shooterChance: 0.12,
+      shooterVolley: 1,
+      table: [
+        { kind: 'int', sign: +1, min: 1, max: 9, weight: 5 },
+        { kind: 'int', sign: -1, min: 1, max: 9, weight: 3.5 },
+      ],
+    },
+    {
+      id: 2,
+      op: '−',
+      name: 'SUBTRACTION',
+      hue: 285,
+      tagline: 'Enemies fire − operators. Negatives drain you.',
+      spawnInterval: 0.56,
+      fallSpeed: [75, 125],
+      shooterChance: 0.55,
+      shooterVolley: 3,
+      table: [
+        { kind: 'int', sign: +1, min: 1, max: 6, weight: 3 },
+        { kind: 'int', sign: -1, min: 2, max: 9, weight: 4 },
+      ],
+    },
+    {
+      id: 3,
+      op: '×',
+      name: 'MULTIPLICATION',
+      hue: 40,
+      tagline: 'Grab ×2 ×3 ×5. Zeros and ×negatives hurt.',
+      spawnInterval: 0.54,
+      fallSpeed: [80, 135],
+      shooterChance: 0.15,
+      shooterVolley: 1,
+      table: [
+        { kind: 'int', sign: +1, min: 1, max: 9, weight: 3 },
+        { kind: 'int', sign: -1, min: 1, max: 9, weight: 1.2 },
+        { kind: 'mult', values: [2, 2, 3, 5], weight: 1.4 },
+        { kind: 'zero', weight: 1.6 },
+        { kind: 'negmult', values: [2, 3], weight: 1.1 },
+      ],
+    },
+    {
+      id: 4,
+      op: '÷',
+      name: 'DIVISION & FRACTIONS',
+      hue: 340,
+      tagline: 'Divisors and fractions shrink your score and your ship.',
+      spawnInterval: 0.52,
+      fallSpeed: [85, 140],
+      shooterChance: 0.22,
+      shooterVolley: 2,
+      table: [
+        { kind: 'int', sign: +1, min: 1, max: 9, weight: 3 },
+        { kind: 'int', sign: -1, min: 1, max: 9, weight: 1.5 },
+        { kind: 'mult', values: [2, 3], weight: 0.8 },
+        { kind: 'div', values: [2, 3, 4], weight: 2 },
+        { kind: 'frac', pairs: [[1, 2], [1, 3], [2, 3], [3, 4]], weight: 1.6 },
+        { kind: 'zero', weight: 0.5 },
+      ],
+    },
+  ];
+  return { STAGES };
+})();
+
+/* ======================= FILE: draw.js ======================= */
+const __draw = (() => {
+  // =============================================================================
+  // draw.js  -  small canvas helpers shared by entities and UI.
+  // =============================================================================
+
+  const { CONFIG } = __config;
+
+  /**
+   * Draw centered/aligned text with an optional neon glow.
+   * opts: size, color, align, baseline, weight, glow (blur radius, 0 = none)
+   */
+  function drawText(ctx, str, x, y, opts = {}) {
+    const { size = 16, color = '#ffffff', align = 'center', baseline = 'middle', weight = 'bold', glow = 0 } = opts;
+    ctx.font = `${weight} ${size}px ${CONFIG.font}`;
+    ctx.textAlign = align;
+    ctx.textBaseline = baseline;
+    ctx.fillStyle = color;
+    if (glow > 0) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = glow;
+    }
+    ctx.fillText(str, x, y);
+    ctx.shadowBlur = 0;
+  }
+
+  /** Trace (but do not fill) a rounded rectangle path. Works in every browser. */
+  function pathRoundRect(ctx, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
+  }
+
+  /**
+   * Draw a pilot's ship. Used for the in-game player and the character-select cards.
+   * Axiom = broad armored fighter, Calcula = sleek swept-wing fighter.
+   */
+  function drawShip(ctx, character, x, y, scale = 1, t = 0) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.scale(scale, scale);
+
+    // engine flame (flickers with time)
+    const flame = 10 + 6 * Math.sin(t * 40);
+    ctx.fillStyle = '#ffb347';
+    ctx.shadowColor = '#ff7b00';
+    ctx.shadowBlur = 12;
+    ctx.beginPath();
+    ctx.moveTo(-5, 12);
+    ctx.lineTo(0, 12 + flame);
+    ctx.lineTo(5, 12);
+    ctx.closePath();
+    ctx.fill();
+
+    // hull
+    ctx.shadowColor = character.color;
+    ctx.shadowBlur = 14;
+    ctx.fillStyle = character.color;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    if (character.id === 'axiom') {
+      ctx.moveTo(0, -24); ctx.lineTo(9, -6); ctx.lineTo(20, 8); ctx.lineTo(20, 16);
+      ctx.lineTo(8, 10); ctx.lineTo(0, 14); ctx.lineTo(-8, 10); ctx.lineTo(-20, 16);
+      ctx.lineTo(-20, 8); ctx.lineTo(-9, -6);
+    } else {
+      ctx.moveTo(0, -26); ctx.lineTo(6, -4); ctx.lineTo(22, 18); ctx.lineTo(7, 11);
+      ctx.lineTo(0, 16); ctx.lineTo(-7, 11); ctx.lineTo(-22, 18); ctx.lineTo(-6, -4);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.stroke();
+
+    // cockpit
+    ctx.fillStyle = '#0b1b33';
+    ctx.beginPath();
+    ctx.ellipse(0, -4, 3.5, 6, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+  return { drawText, pathRoundRect, drawShip };
+})();
+
+/* ======================= FILE: audio.js ======================= */
+const __audio = (() => {
+  // =============================================================================
+  // audio.js  -  tiny synthesized sound effects (no audio files needed).
+  // Browsers only allow audio after a user gesture, so main.js calls unlock()
+  // on the first key press / click. Everything is a no-op if WebAudio is missing
+  // (for example when the smoke test runs in Node).
+  // =============================================================================
+
+  // name -> oscillator recipe. `slide` is the pitch change (Hz) over the duration.
+  const PRESETS = {
+    shoot:    { freq: 880, slide: -420, dur: 0.05, type: 'square',   gain: 0.20 },
+    kill:     { freq: 320, slide: -140, dur: 0.09, type: 'triangle', gain: 0.45 },
+    pickup:   { freq: 620, slide: 420,  dur: 0.10, type: 'sine',     gain: 0.55 },
+    hit:      { freq: 150, slide: -90,  dur: 0.20, type: 'sawtooth', gain: 0.55 },
+    power:    { freq: 480, slide: 720,  dur: 0.28, type: 'sine',     gain: 0.60 },
+    bomb:     { freq: 110, slide: -70,  dur: 0.55, type: 'sawtooth', gain: 0.70 },
+    stage:    { freq: 440, slide: 440,  dur: 0.40, type: 'triangle', gain: 0.55 },
+    gameover: { freq: 220, slide: -170, dur: 0.80, type: 'sawtooth', gain: 0.60 },
+  };
+
+  class Sfx {
+    constructor() {
+      this.ctx = null;
+      this.muted = false;
+      this.master = 0.12;   // overall volume
+      this.lastPlayed = {}; // name -> timestamp, used to throttle rapid sounds
+    }
+
+    unlock() {
+      if (this.ctx) return;
+      const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
+      if (!AC) return;
+      try { this.ctx = new AC(); } catch { this.ctx = null; }
+    }
+
+    toggleMute() {
+      this.muted = !this.muted;
+    }
+
+    play(name) {
+      if (!this.ctx || this.muted) return;
+      const p = PRESETS[name];
+      if (!p) return;
+
+      const now = this.ctx.currentTime;
+      if (now - (this.lastPlayed[name] ?? -1) < 0.03) return; // throttle
+      this.lastPlayed[name] = now;
+
+      const osc = this.ctx.createOscillator();
+      const amp = this.ctx.createGain();
+      osc.type = p.type;
+      osc.frequency.setValueAtTime(p.freq, now);
+      osc.frequency.linearRampToValueAtTime(Math.max(30, p.freq + p.slide), now + p.dur);
+      amp.gain.setValueAtTime(this.master * p.gain, now);
+      amp.gain.exponentialRampToValueAtTime(0.0001, now + p.dur);
+      osc.connect(amp).connect(this.ctx.destination);
+      osc.start(now);
+      osc.stop(now + p.dur + 0.02);
+    }
+  }
+  return { Sfx };
+})();
+
+/* ======================= FILE: input.js ======================= */
+const __input = (() => {
+  // =============================================================================
+  // input.js  -  keyboard handling with "held" and "just pressed" queries.
+  //
+  //   input.isDown('left')      -> true every frame the key is held
+  //   input.wasPressed('bomb')  -> true only on the frame the key went down
+  //
+  // Game.update() calls input.endFrame() once per frame to clear the edge set.
+  // =============================================================================
+
+  // Logical action -> physical key codes (KeyboardEvent.code, layout independent)
+  const KEYMAP = {
+    left: ['ArrowLeft', 'KeyA'],
+    right: ['ArrowRight', 'KeyD'],
+    up: ['ArrowUp', 'KeyW'],
+    down: ['ArrowDown', 'KeyS'],
+    shoot: ['Space'],
+    bomb: ['KeyB'],
+    confirm: ['Enter', 'Space'],
+    pause: ['KeyP', 'Escape'],
+    back: ['Escape'],
+    mute: ['KeyM'],
+    pick1: ['Digit1'],
+    pick2: ['Digit2'],
+  };
+
+  // Keys whose default browser behaviour (page scroll) must be suppressed.
+  const PREVENT_DEFAULT = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space']);
+
+  class Input {
+    /** @param {EventTarget} target  usually `window`; any EventTarget works (tests pass a stub) */
+    constructor(target = globalThis) {
+      this.held = new Set();
+      this.justPressed = new Set();
+      // One-finger drag state, fed by main.js. dx/dy accumulate until the Player uses them.
+      this.touch = { active: false, id: null, lastX: 0, lastY: 0, dx: 0, dy: 0 };
+
+      if (target && target.addEventListener) {
+        target.addEventListener('keydown', (e) => this.handleKeyDown(e));
+        target.addEventListener('keyup', (e) => this.handleKeyUp(e));
+        // Losing focus would otherwise leave keys "stuck" down.
+        target.addEventListener('blur', () => { this.held.clear(); this.touchEnd(this.touch.id); });
+      }
+    }
+
+    handleKeyDown(e) {
+      if (PREVENT_DEFAULT.has(e.code) && e.preventDefault) e.preventDefault();
+      if (!this.held.has(e.code)) this.justPressed.add(e.code); // ignore auto-repeat
+      this.held.add(e.code);
+    }
+
+    handleKeyUp(e) {
+      this.held.delete(e.code);
+    }
+
+    // ---- touch drag (x, y in canvas coordinates) -----------------------------
+
+    touchStart(id, x, y) {
+      if (this.touch.active) return; // ignore extra fingers
+      Object.assign(this.touch, { active: true, id, lastX: x, lastY: y, dx: 0, dy: 0 });
+    }
+
+    touchMove(id, x, y) {
+      const t = this.touch;
+      if (!t.active || id !== t.id) return;
+      t.dx += x - t.lastX;
+      t.dy += y - t.lastY;
+      t.lastX = x;
+      t.lastY = y;
+    }
+
+    touchEnd(id) {
+      const t = this.touch;
+      if (t.active && id === t.id) Object.assign(t, { active: false, id: null, dx: 0, dy: 0 });
+    }
+
+    isDown(action) {
+      return KEYMAP[action].some((code) => this.held.has(code));
+    }
+
+    wasPressed(action) {
+      return KEYMAP[action].some((code) => this.justPressed.has(code));
+    }
+
+    endFrame() {
+      this.justPressed.clear();
+    }
+  }
+  return { KEYMAP, Input };
+})();
+
+/* ======================= FILE: mathRules.js ======================= */
+const __mathRules = (() => {
+  // =============================================================================
+  // mathRules.js  -  the Math Rules Manager.
+  //
+  // This is the ONLY place that decides how a number/operator changes your
+  // running score. Your score IS your health: it hits 0 -> game over.
+  //
+  // Token kinds understood here (see entities.js / stages.js):
+  //   'int'       signed integer. +n is a pickup, -n is a hazard.
+  //   'subBullet' a subtraction operator fired by enemies: touching it does -n.
+  //   'mult'      xk  (k > 1)  good: raises your multiplier.
+  //   'negmult'   x(-k)        bad : costs a share of your score, resets multiplier.
+  //   'zero'      0            bad : flat penalty AND resets the multiplier.
+  //   'div'       /n           bad : score is divided (softened), ship shrinks.
+  //   'frac'      p/q  (<1)    bad : same as div with factor p/q.
+  //
+  // Every resolve* method returns a result object:
+  //   { delta, label, tone: 'good' | 'bad' | 'neutral', shrink? }
+  // so the Game can show floating text, play sounds and shake the screen.
+  // =============================================================================
+
+  const { CONFIG } = __config;
+
+  const MINUS = '−';
+  const TIMES = '×';
+
+  /** Trial-division primality test (inputs are tiny). Negative numbers use |n|. */
+  function isPrime(n) {
+    n = Math.abs(Math.trunc(n));
+    if (n < 2) return false;
+    for (let i = 2; i * i <= n; i++) {
+      if (n % i === 0) return false;
+    }
+    return true;
+  }
+
+  class MathRules {
+    /** @param {object} character an entry from CHARACTERS */
+    constructor(character) {
+      this.character = character;
+      this.score = character.startScore;
+      this.multiplier = 1;
+      this.stageOp = '+';
+      this.dangerScale = 1;   // grows every stage so late hazards bite harder
+      this.multTimer = 0;     // seconds since the multiplier was last refreshed
+      // Seconds remaining for each timed power-up.
+      this.fx = { abs: 0, pi: 0, sq: 0 };
+    }
+
+    // ---- state queries --------------------------------------------------------
+
+    get absActive() { return this.fx.abs > 0; }
+    get magnetActive() { return this.fx.pi > 0; }
+    get squareActive() { return this.fx.sq > 0; }
+
+    /** Multiplier actually used for gains. x^2 power-up squares it (min x2). */
+    get effectiveMultiplier() {
+      const m = this.squareActive ? Math.max(2, this.multiplier * this.multiplier) : this.multiplier;
+      return Math.min(m, CONFIG.maxEffectiveMultiplier);
+    }
+
+    isDead() { return this.score <= 0; }
+
+    // ---- housekeeping ---------------------------------------------------------
+
+    /** @param {object} stage stage definition   @param {number} stagesCleared 0-based count */
+    setStage(stage, stagesCleared = 0) {
+      this.stageOp = stage.op;
+      this.dangerScale = 1 + CONFIG.dangerPerStage * stagesCleared;
+    }
+
+    tick(dt) {
+      for (const k of Object.keys(this.fx)) this.fx[k] = Math.max(0, this.fx[k] - dt);
+
+      // "Use it or lose it": a big multiplier halves every few seconds.
+      if (this.multiplier > 1) {
+        this.multTimer += dt;
+        if (this.multTimer >= CONFIG.multiplierDecaySecs) {
+          this.multTimer = 0;
+          this.multiplier = Math.max(1, Math.floor(this.multiplier / 2));
+        }
+      } else {
+        this.multTimer = 0;
+      }
+    }
+
+    activatePowerup(kind) {
+      this.fx[kind] = CONFIG.powerupDuration[kind];
+    }
+
+    /** Flat score change that ignores multipliers and defense (stage bonuses). */
+    addScore(n) { this.score += n; }
+
+    // ---- internal helpers -----------------------------------------------------
+
+    /** Apply a positive gain (scaled by the multiplier). */
+    _gain(base) {
+      const d = Math.max(1, Math.round(base * this.effectiveMultiplier));
+      this.score += d;
+      return d;
+    }
+
+    /** Apply a loss (scaled by pilot defense and stage danger). Returns a result object. */
+    _loss(raw, prefix = '', pct = 0) {
+      // `pct` adds a share of the CURRENT score on top of the flat amount, so the
+      // more you are carrying, the more a hit costs (score is health, after all).
+      const base = raw + Math.ceil(Math.max(0, this.score) * pct);
+      const d = Math.max(1, Math.round(base * this.character.lossScale * this.dangerScale));
+      this.score -= d;
+      return { delta: -d, label: `${prefix}${MINUS}${d}`, tone: 'bad' };
+    }
+
+    /**
+     * Incoming negative value of size n (negative integer or subtraction bullet).
+     * The Absolute Value Shield turns it into a positive bonus: |-n| = n.
+     */
+    _negative(n) {
+      if (this.absActive) {
+        const d = this._gain(n);
+        return { delta: d, label: `|${MINUS}${n}|=+${d}`, tone: 'good', absorbed: true };
+      }
+      const res = this._loss(n, '', CONFIG.hazardPercent * Math.min(n, 9) / 9);
+      // Stage 4 flavour: negatives also eat into your multiplier.
+      if (this.stageOp === '÷') this.multiplier = Math.max(1, Math.floor(this.multiplier / 2));
+      return res;
+    }
+
+    // ---- public rules ---------------------------------------------------------
+
+    /** The player touched (or was hit by) `token`. Mutates score/multiplier. */
+    resolveTouch(token) {
+      switch (token.kind) {
+        case 'int': {
+          if (token.value > 0) {
+            const d = this._gain(token.value);
+            return { delta: d, label: `+${d}`, tone: 'good' };
+          }
+          if (token.value === 0) return this.resolveTouch({ kind: 'zero' });
+          return this._negative(Math.abs(token.value));
+        }
+
+        case 'subBullet':
+          return this._negative(token.value);
+
+        case 'mult': {
+          this.multTimer = 0; // refreshing keeps the decay clock from ticking
+          this.multiplier = Math.min(CONFIG.maxMultiplier, this.multiplier * token.value);
+          return { delta: 0, label: `MULT ${TIMES}${this.multiplier}`, tone: 'good' };
+        }
+
+        case 'negmult': {
+          const k = token.value;
+          if (this.absActive) {
+            // |x(-k)| = xk : the shield converts the hazard into a real multiplier
+            this.multiplier = Math.min(CONFIG.maxMultiplier, this.multiplier * k);
+            return { delta: 0, label: `|${TIMES}${MINUS}${k}|=${TIMES}${k}`, tone: 'good', absorbed: true };
+          }
+          // Multiplying a positive score by a negative flips its sign. A full flip
+          // would be an instant game over, so we charge a capped share instead.
+          const share = Math.floor(this.score * CONFIG.negMultRate * k);
+          const cap = Math.floor(this.score * CONFIG.negMultMaxFraction);
+          this.multiplier = 1;
+          return this._loss(Math.max(10, Math.min(share, cap)), `${TIMES}${MINUS}${k} `);
+        }
+
+        case 'zero': {
+          if (this.absActive) {
+            // |0| = 0 ... the shield simply neutralises it.
+            return { delta: 0, label: 'NULLIFIED', tone: 'neutral', absorbed: true };
+          }
+          this.multiplier = 1;
+          return this._loss(CONFIG.zeroPenalty, '0 ', CONFIG.zeroPercent);
+        }
+
+        case 'div':
+        case 'frac': {
+          // factor f in (0,1). Real division would halve your score at /2, which is
+          // brutal, so the loss is softened by CONFIG.divSeverity. NOTE: the shield
+          // does NOT help here, because these are not negative numbers.
+          const f = token.kind === 'div' ? 1 / token.value : token.num / token.den;
+          const raw = Math.max(1, Math.floor(this.score * (1 - f) * CONFIG.divSeverity));
+          this.multiplier = Math.max(1, Math.floor(this.multiplier * f));
+          const res = this._loss(raw, `${token.label} `);
+          res.shrink = f; // Game shrinks the ship (weaker shots) by this factor
+          return res;
+        }
+
+        default:
+          return { delta: 0, label: '', tone: 'neutral' };
+      }
+    }
+
+    /** The player shot (or bombed) a hostile token: pay out a kill reward. */
+    resolveKill(token) {
+      let base;
+      switch (token.kind) {
+        case 'int': base = Math.ceil(Math.abs(token.value) / 2) + 1; break;
+        case 'zero': base = 3; break;
+        default: base = 5; // negmult, div, frac
+      }
+      // Kill rewards are flat on purpose: only PICKUPS use the multiplier, so
+      // standing still and farming kills cannot snowball.
+      this.score += base;
+      return { delta: base, label: `+${base}`, tone: 'good' };
+    }
+  }
+  return { isPrime, MathRules };
+})();
+
+/* ======================= FILE: entities.js ======================= */
+const __entities = (() => {
+  // =============================================================================
+  // entities.js  -  everything that exists on the playfield.
+  //
+  //   Player      the pilot's ship (movement, weapons, shrink effect)
+  //   Bullet      player shots and enemy subtraction bullets
+  //   Token       falling numbers/operators (pickups AND enemies)
+  //   PowerUp     |x|, pi and x^2 drops
+  //   Particle / FloatingText   pure visual effects
+  //
+  // Entities only know how to move and draw themselves. Scoring lives in
+  // mathRules.js and collisions live in game.js.
+  // =============================================================================
+
+  const { CONFIG } = __config;
+  const { drawText, drawShip, pathRoundRect } = __draw;
+
+  const W = CONFIG.width;
+  const H = CONFIG.height;
+  const TAU = Math.PI * 2;
+
+  const MINUS = '−';
+  const TIMES = '×';
+  const DIVIDE = '÷';
+
+  const COLORS = {
+    good: '#5dffb0',
+    bad: '#ff4d6d',
+    gold: '#ffd75e',
+    cyan: '#4dd2ff',
+    pink: '#ff6bd6',
+    violet: '#b58cff',
+    ink: '#07101f',
+  };
+
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  // -----------------------------------------------------------------------------
+  // Bullet
+  // -----------------------------------------------------------------------------
+  class Bullet {
+    /**
+     * owner 'player': a shot that damages hostile tokens.
+     * owner 'enemy' : kind 'subBullet' with `value` n means "-n" when it touches you.
+     */
+    constructor(o) {
+      this.x = o.x;
+      this.y = o.y;
+      this.vx = o.vx || 0;
+      this.vy = o.vy || 0;
+      this.owner = o.owner;
+      this.damage = o.damage ?? 1;
+      this.radius = o.radius ?? 4;
+      this.kind = o.kind || 'shot';
+      this.value = o.value || 0;
+      this.color = o.color || COLORS.cyan;
+      this.dead = false;
+    }
+
+    update(dt) {
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      if (this.x < -40 || this.x > W + 40 || this.y < -40 || this.y > H + 40) this.dead = true;
+    }
+
+    draw(ctx) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      if (this.owner === 'player') {
+        ctx.rotate(Math.atan2(this.vx, -this.vy)); // point along travel direction
+        ctx.shadowColor = this.color;
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = this.color;
+        const w = 3 + Math.min(this.damage, 3) * 1.2;
+        ctx.fillRect(-w / 2, -9, w, 18);
+      } else {
+        // enemy subtraction operator: a red orb that says "-n"
+        ctx.shadowColor = COLORS.bad;
+        ctx.shadowBlur = 12;
+        ctx.fillStyle = 'rgba(40,6,16,0.9)';
+        ctx.strokeStyle = COLORS.bad;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius, 0, TAU);
+        ctx.fill();
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        drawText(ctx, `${MINUS}${this.value}`, 0, 1, { size: 12, color: '#ffd0d9' });
+      }
+      ctx.restore();
+    }
+  }
+
+  // -----------------------------------------------------------------------------
+  // Token: a falling number or operator.
+  // -----------------------------------------------------------------------------
+  class Token {
+    /**
+     * spec: { kind, value, num, den, x, y, vy, pattern, amp, freq, vx, hp, shooter }
+     * `role` ('good' pickup or 'bad' enemy) and `label` are derived from the kind.
+     */
+    constructor(spec) {
+      this.kind = spec.kind;
+      this.value = spec.value ?? 0;
+      this.num = spec.num ?? 1;
+      this.den = spec.den ?? 1;
+      this.x = spec.x;
+      this.y = spec.y ?? -30;
+      this.vx = spec.vx ?? 0;
+      this.vy = spec.vy ?? 90;
+      this.pattern = spec.pattern || 'straight'; // 'straight' | 'sine' | 'drift'
+      this.amp = spec.amp ?? 0;
+      this.freq = spec.freq ?? 0;
+      this.hp = spec.hp ?? 1;
+      this.shooter = spec.shooter || null; // { interval, volley } -> fires -n bullets
+      this.fireTimer = this.shooter ? this.shooter.interval * (0.5 + Math.random() * 0.5) : 0;
+      this.t = 0;
+      this.flash = 0;
+      this.spared = 0;
+      this.dead = false;
+
+      switch (this.kind) {
+        case 'int':
+          this.role = this.value > 0 ? 'good' : 'bad';
+          this.label = this.value > 0 ? `+${this.value}` : `${MINUS}${Math.abs(this.value)}`;
+          break;
+        case 'mult':
+          this.role = 'good';
+          this.label = `${TIMES}${this.value}`;
+          break;
+        case 'negmult':
+          this.role = 'bad';
+          this.label = `${TIMES}${MINUS}${this.value}`;
+          break;
+        case 'zero':
+          this.role = 'bad';
+          this.label = '0';
+          break;
+        case 'div':
+          this.role = 'bad';
+          this.label = `${DIVIDE}${this.value}`;
+          break;
+        case 'frac':
+          this.role = 'bad';
+          this.label = `${this.num}/${this.den}`;
+          break;
+        default:
+          throw new Error(`Unknown token kind: ${this.kind}`);
+      }
+      this.radius = 18;
+    }
+
+    /** Multiplicative factor for div/frac tokens (used by the ship shrink). */
+    get factor() {
+      return this.kind === 'div' ? 1 / this.value : this.num / this.den;
+    }
+
+    update(dt) {
+      const prev = this.t;
+      this.t += dt;
+      this.y += this.vy * dt;
+      if (this.pattern === 'sine') {
+        // incremental so the Pi Magnet can nudge x without being overwritten
+        this.x += this.amp * (Math.sin(this.t * this.freq) - Math.sin(prev * this.freq));
+      } else if (this.pattern === 'drift') {
+        this.x += this.vx * dt;
+        if (this.x < this.radius || this.x > W - this.radius) {
+          this.vx = -this.vx;
+          this.x = clamp(this.x, this.radius, W - this.radius);
+        }
+      }
+      if (this.flash > 0) this.flash -= dt;
+      if (this.spared > 0) this.spared -= dt;
+    }
+
+    /** Returns true on the frame this shooter should fire. */
+    tickFire(dt) {
+      if (!this.shooter) return false;
+      this.fireTimer -= dt;
+      if (this.fireTimer <= 0 && this.y > 10 && this.y < H * 0.55) {
+        this.fireTimer = this.shooter.interval;
+        return true;
+      }
+      return false;
+    }
+
+    draw(ctx) {
+      const good = this.role === 'good';
+      const color = this.flash > 0 ? '#ffffff' : good ? COLORS.good : COLORS.bad;
+      ctx.save();
+      ctx.translate(this.x, this.y);
+
+      // Shape + color: pickups are circles, enemies are diamonds (colorblind friendly).
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 14;
+      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = color;
+      ctx.fillStyle = 'rgba(6,14,30,0.85)';
+      ctx.beginPath();
+      if (good) {
+        ctx.arc(0, 0, this.radius, 0, TAU);
+      } else {
+        const r = this.radius * 1.3;
+        ctx.moveTo(0, -r); ctx.lineTo(r, 0); ctx.lineTo(0, r); ctx.lineTo(-r, 0);
+        ctx.closePath();
+      }
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Gold ring = "prime, survived the bomb"
+      if (this.spared > 0) {
+        ctx.strokeStyle = COLORS.gold;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius + 10, 0, TAU);
+        ctx.stroke();
+      }
+
+      drawText(ctx, this.label, 0, 1, { size: this.label.length > 2 ? 15 : 19, color });
+
+      // HP pips for enemies that take more than one hit
+      if (!good && this.hp > 1) {
+        const n = Math.ceil(this.hp);
+        ctx.fillStyle = color;
+        for (let i = 0; i < n; i++) ctx.fillRect(-n * 4 + i * 8 + 1, this.radius + 12, 6, 3);
+      }
+      ctx.restore();
+    }
+  }
+
+  // -----------------------------------------------------------------------------
+  // PowerUp
+  // -----------------------------------------------------------------------------
+  const POWERUP_INFO = {
+    abs: { glyph: '|x|', color: '#7df9ff', name: 'ABSOLUTE SHIELD' },
+    pi: { glyph: 'π', color: '#ffd75e', name: 'PI MAGNET' },
+    sq: { glyph: 'x²', color: '#c79bff', name: 'EXPONENT' },
+  };
+
+  class PowerUp {
+    constructor(kind, x) {
+      this.kind = kind;
+      this.x = x;
+      this.y = -30;
+      this.vy = 75;
+      this.radius = 17;
+      this.t = 0;
+      this.dead = false;
+    }
+
+    update(dt) {
+      this.t += dt;
+      this.y += this.vy * dt;
+      if (this.y > H + 40) this.dead = true;
+    }
+
+    draw(ctx) {
+      const info = POWERUP_INFO[this.kind];
+      ctx.save();
+      ctx.translate(this.x, this.y + Math.sin(this.t * 4) * 3);
+      ctx.rotate(Math.sin(this.t * 2) * 0.12);
+      ctx.shadowColor = info.color;
+      ctx.shadowBlur = 18;
+      ctx.fillStyle = 'rgba(10,16,34,0.9)';
+      ctx.strokeStyle = info.color;
+      ctx.lineWidth = 3;
+      pathRoundRect(ctx, -20, -20, 40, 40, 10);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      drawText(ctx, info.glyph, 0, 1, { size: 20, color: info.color });
+      ctx.restore();
+    }
+  }
+
+  // -----------------------------------------------------------------------------
+  // Pure visual effects
+  // -----------------------------------------------------------------------------
+  class Particle {
+    constructor(x, y, vx, vy, life, color, size = 3) {
+      Object.assign(this, { x, y, vx, vy, life, maxLife: life, color, size, dead: false });
+    }
+    update(dt) {
+      this.x += this.vx * dt;
+      this.y += this.vy * dt;
+      this.vx *= 0.98;
+      this.vy *= 0.98;
+      this.life -= dt;
+      if (this.life <= 0) this.dead = true;
+    }
+    draw(ctx) {
+      ctx.globalAlpha = Math.max(0, this.life / this.maxLife);
+      ctx.fillStyle = this.color;
+      ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  class FloatingText {
+    constructor(x, y, text, color, size = 18) {
+      Object.assign(this, { x, y, text, color, size, life: 0.9, maxLife: 0.9, dead: false });
+    }
+    update(dt) {
+      this.y -= 46 * dt;
+      this.life -= dt;
+      if (this.life <= 0) this.dead = true;
+    }
+    draw(ctx) {
+      ctx.globalAlpha = Math.max(0, Math.min(1, this.life / (this.maxLife * 0.6)));
+      drawText(ctx, this.text, this.x, this.y, { size: this.size, color: this.color, glow: 8 });
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // -----------------------------------------------------------------------------
+  // Player
+  // -----------------------------------------------------------------------------
+  class Player {
+    constructor(character) {
+      this.character = character;
+      this.x = W / 2;
+      this.y = H - 100;
+      this.sizeScale = 1; // shrinks when hit by / ÷ fractions: smaller ship = weaker shots
+      this.cooldown = 0;
+      this.volley = 0;
+      this.t = 0;
+    }
+
+    /** Tiny core hitbox (shmup convention): hazards must touch the cockpit. */
+    get hitRadius() { return 8 * this.sizeScale; }
+    /** Pickups are collected with a more generous radius. */
+    get collectRadius() { return 20 * this.sizeScale; }
+
+    /** f in (0,1): shrink toward 0.5 + 0.5*f of full size, never below shrinkMin. */
+    shrink(f) {
+      this.sizeScale = Math.max(CONFIG.shrinkMin, Math.min(this.sizeScale, 0.5 + 0.5 * f));
+    }
+
+    update(dt, input) {
+      this.t += dt;
+      let dx = (input.isDown('right') ? 1 : 0) - (input.isDown('left') ? 1 : 0);
+      let dy = (input.isDown('down') ? 1 : 0) - (input.isDown('up') ? 1 : 0);
+      if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; } // no diagonal speed boost
+
+      const speed = this.character.speed;
+      this.x = clamp(this.x + dx * speed * dt, 22, W - 22);
+      this.y = clamp(this.y + dy * speed * dt, 80, H - 34);
+
+      // Touch drag: the ship follows the finger's movement (relative, 1.3x).
+      const tc = input.touch;
+      if (tc && tc.active) {
+        this.x = clamp(this.x + tc.dx * CONFIG.touch.dragSensitivity, 22, W - 22);
+        this.y = clamp(this.y + tc.dy * CONFIG.touch.dragSensitivity, 80, H - 34);
+        tc.dx = 0;
+        tc.dy = 0;
+      }
+
+      this.cooldown = Math.max(0, this.cooldown - dt);
+      this.sizeScale = Math.min(1, this.sizeScale + CONFIG.shrinkRecoverPerSec * dt);
+    }
+
+    /**
+     * Try to fire. Returns an array of Bullets, or null while on cooldown.
+     *   single: one centered shot.
+     *   burst : twin shots, and every Nth volley a 5-way fan with bonus damage.
+     */
+    tryFire() {
+      if (this.cooldown > 0) return null;
+      const c = this.character;
+      this.cooldown = c.fireCooldown;
+      this.volley++;
+
+      const dmg = c.damage * this.sizeScale; // a shrunken ship hits weaker
+      const make = (x, angle, d, color) => new Bullet({
+        x, y: this.y - 20, owner: 'player', damage: d, color,
+        vx: Math.sin(angle) * 640, vy: -Math.cos(angle) * 640,
+      });
+
+      if (c.weapon === 'single') {
+        return [make(this.x, 0, dmg, c.color)];
+      }
+      if (this.volley % c.burstEvery === 0) {
+        const d = dmg * c.burstDamageMult;
+        return [-0.3, -0.15, 0, 0.15, 0.3].map((a) => make(this.x, a, d, '#ffffff'));
+      }
+      return [make(this.x - 8, 0, dmg, c.color), make(this.x + 8, 0, dmg, c.color)];
+    }
+
+    draw(ctx) {
+      drawShip(ctx, this.character, this.x, this.y, this.sizeScale, this.t);
+    }
+  }
+  return { MINUS, TIMES, DIVIDE, COLORS, Bullet, Token, POWERUP_INFO, PowerUp, Particle, FloatingText, Player };
+})();
+
+/* ======================= FILE: spawner.js ======================= */
+const __spawner = (() => {
+  // =============================================================================
+  // spawner.js  -  decides WHAT falls from the top and WHEN.
+  //
+  // Instead of alien sprites, the "enemies" are numbers and operators picked from
+  // the current stage's weighted table (stages.js).
+  // =============================================================================
+
+  const { CONFIG } = __config;
+  const { Token, PowerUp } = __entities;
+
+  const W = CONFIG.width;
+
+  class Spawner {
+    /** @param {() => number} rng  injectable random source (tests pass a seeded one) */
+    constructor(rng = Math.random) {
+      this.rng = rng;
+      this.reset();
+    }
+
+    reset() {
+      this.timer = 0.9;
+      this.powerTimer = this._nextPowerTime();
+    }
+
+    _nextPowerTime() {
+      const [lo, hi] = CONFIG.powerupInterval;
+      return lo + (hi - lo) * this.rng();
+    }
+
+    /**
+     * Called every frame.
+     * @param {object} stage   current stage definition
+     * @param {object} ctx     { intensity: 0..1 progress through the stage, difficulty: >= 1, playerX }
+     * @param {Token[]} tokens     output list for new tokens
+     * @param {PowerUp[]} powerups output list for new power-ups
+     */
+    update(dt, stage, ctx, tokens, powerups) {
+      // --- tokens: spawn faster as the stage progresses and as loops increase ---
+      this.timer -= dt;
+      if (this.timer <= 0) {
+        const interval = (stage.spawnInterval / ctx.difficulty) * (1 - 0.35 * ctx.intensity);
+        this.timer = interval * (0.7 + 0.6 * this.rng());
+        tokens.push(this._makeToken(this._pick(stage.table), stage, ctx.difficulty, ctx.playerX));
+      }
+
+      // --- power-ups: rare, on their own timer ---------------------------------
+      this.powerTimer -= dt;
+      if (this.powerTimer <= 0) {
+        this.powerTimer = this._nextPowerTime();
+        const kinds = ['abs', 'pi', 'sq'];
+        const kind = kinds[Math.floor(this.rng() * kinds.length)];
+        powerups.push(new PowerUp(kind, 40 + this.rng() * (W - 80)));
+      }
+    }
+
+    /** Weighted random pick from a stage table. */
+    _pick(table) {
+      const total = table.reduce((s, e) => s + e.weight, 0);
+      let roll = this.rng() * total;
+      for (const entry of table) {
+        roll -= entry.weight;
+        if (roll <= 0) return entry;
+      }
+      return table[table.length - 1];
+    }
+
+    _choice(list) {
+      return list[Math.floor(this.rng() * list.length)];
+    }
+
+    _makeToken(entry, stage, difficulty, playerX) {
+      const r = (a, b) => a + (b - a) * this.rng();
+      const ri = (a, b) => Math.floor(r(a, b + 1));
+
+      const spec = {
+        kind: entry.kind,
+        x: r(36, W - 36),
+        y: -30,
+        vy: r(stage.fallSpeed[0], stage.fallSpeed[1]) * (0.9 + 0.1 * difficulty),
+        hp: 1,
+      };
+
+      // What number/operator is it? Hostile ones take more hits to destroy.
+      switch (entry.kind) {
+        case 'int':
+          spec.value = entry.sign * ri(entry.min, entry.max);
+          if (spec.value < 0) spec.hp = 1 + Math.floor(-spec.value / 4); // 1..3
+          break;
+        case 'mult':
+          spec.value = this._choice(entry.values);
+          break;
+        case 'negmult':
+        case 'div':
+          spec.value = this._choice(entry.values);
+          spec.hp = 2;
+          break;
+        case 'frac': {
+          const [num, den] = this._choice(entry.pairs);
+          spec.num = num;
+          spec.den = den;
+          spec.hp = 2;
+          break;
+        }
+        case 'zero':
+          spec.hp = 2;
+          break;
+      }
+
+      // Hostile numbers sometimes spawn right above the player, so parking in one
+      // spot is not a winning strategy.
+      const hostile = (entry.kind === 'int' && spec.value < 0) || ['zero', 'negmult', 'div', 'frac'].includes(entry.kind);
+      const aimed = hostile && playerX !== undefined && this.rng() < CONFIG.aimedSpawnChance;
+      if (aimed) spec.x = Math.max(36, Math.min(W - 36, playerX + r(-40, 40)));
+
+      // Movement pattern
+      const roll = aimed ? 1 : this.rng();
+      if (roll < 0.3) {
+        spec.pattern = 'sine';
+        spec.amp = r(30, 70);
+        spec.freq = r(1.2, 2.4);
+        spec.x = r(spec.amp + 30, W - spec.amp - 30); // keep the whole wave on screen
+      } else if (roll < 0.45) {
+        spec.pattern = 'drift';
+        spec.vx = (this.rng() < 0.5 ? -1 : 1) * r(35, 80);
+      }
+
+      // Some hostile integers carry a gun and fire "-n" subtraction bullets.
+      if (entry.kind === 'int' && spec.value < 0 && this.rng() < stage.shooterChance * difficulty) {
+        spec.shooter = { interval: r(1.3, 2.1) / Math.sqrt(difficulty), volley: stage.shooterVolley };
+        spec.vy *= 0.65;           // shooters linger so you can see them
+        spec.pattern = 'straight';
+      }
+
+      return new Token(spec);
+    }
+  }
+  return { Spawner };
+})();
+
+/* ======================= FILE: ui.js ======================= */
+const __ui = (() => {
+  // =============================================================================
+  // ui.js  -  HUD, menu and overlay screens. Pure drawing, no game logic.
+  // Each function receives the 2D context and the Game to read state from.
+  // =============================================================================
+
+  const { CONFIG, CHARACTERS } = __config;
+  const { STAGES } = __stages;
+  const { drawText, drawShip, pathRoundRect } = __draw;
+  const { POWERUP_INFO, COLORS } = __entities;
+
+  const W = CONFIG.width;
+  const H = CONFIG.height;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  // -----------------------------------------------------------------------------
+  // In-game HUD
+  // -----------------------------------------------------------------------------
+  function drawHUD(ctx, game) {
+    const r = game.rules;
+    const stage = game.stage;
+
+    // Top panel
+    ctx.fillStyle = 'rgba(4,10,24,0.62)';
+    ctx.fillRect(0, 0, W, 58);
+
+    drawText(ctx, 'SCORE = HEALTH', 14, 13, { size: 10, align: 'left', color: '#8fb3d9' });
+    const low = r.score < CONFIG.lowScoreWarning;
+    drawText(ctx, String(Math.max(0, Math.round(game.displayScore))), 14, 37, {
+      size: 28, align: 'left', color: low ? COLORS.bad : '#ffffff', glow: 8,
+    });
+
+    drawText(ctx, `${stage.op}  ${stage.name}`, W / 2 + 10, 13, { size: 11, color: `hsl(${stage.hue},90%,70%)` });
+    const prog = clamp(game.stageTime / CONFIG.stageDuration, 0, 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(W / 2 - 60, 24, 140, 4);
+    ctx.fillStyle = `hsl(${stage.hue},90%,60%)`;
+    ctx.fillRect(W / 2 - 60, 24, 140 * prog, 4);
+
+    const m = r.effectiveMultiplier;
+    drawText(ctx, 'MULT', W - 14, 13, { size: 10, align: 'right', color: '#8fb3d9' });
+    drawText(ctx, `×${m}`, W - 14, 37, {
+      size: 26, align: 'right', color: m > 1 ? COLORS.gold : '#5b7497', glow: m > 1 ? 10 : 0,
+    });
+    if (r.squareActive) {
+      drawText(ctx, `(${r.multiplier}²)`, W - 80, 37, { size: 12, align: 'right', color: POWERUP_INFO.sq.color });
+    }
+
+    // Health bar: green when comfortable, red when close to zero
+    const ratio = clamp(r.score / (r.character.startScore * 1.5), 0, 1);
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    ctx.fillRect(0, 52, W, 6);
+    ctx.fillStyle = `hsl(${ratio * 120},85%,55%)`;
+    ctx.fillRect(0, 52, W * ratio, 6);
+
+    // Bottom-left: bombs
+    const bombColor = game.bombs > 0 ? COLORS.violet : '#4a5a78';
+    if (game.touchMode) {
+      // On-screen buttons for touch players
+      const b = CONFIG.touch.bomb;
+      ctx.fillStyle = 'rgba(20,10,50,0.75)';
+      ctx.strokeStyle = bombColor;
+      ctx.lineWidth = 2;
+      pathRoundRect(ctx, b.x, b.y, b.w, b.h, 12);
+      ctx.fill();
+      ctx.stroke();
+      drawText(ctx, `BOMB ×${game.bombs}`, b.x + b.w / 2, b.y + b.h / 2, { size: 17, color: bombColor });
+
+      const p = CONFIG.touch.pause;
+      ctx.fillStyle = 'rgba(10,18,40,0.75)';
+      ctx.strokeStyle = '#8fb3d9';
+      pathRoundRect(ctx, p.x, p.y, p.w, p.h, 10);
+      ctx.fill();
+      ctx.stroke();
+      drawText(ctx, 'II', p.x + p.w / 2, p.y + p.h / 2, { size: 18, color: '#8fb3d9' });
+    } else {
+      drawText(ctx, `PRIME BOMB [B]  ×${game.bombs}`, 12, H - 16, { size: 13, align: 'left', color: bombColor });
+    }
+
+    // Bottom-right: active power-up timers
+    let y = H - 16;
+    for (const kind of ['abs', 'pi', 'sq']) {
+      const left = r.fx[kind];
+      if (left <= 0) continue;
+      const info = POWERUP_INFO[kind];
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(W - 72, y - 4, 60, 6);
+      ctx.fillStyle = info.color;
+      ctx.fillRect(W - 72, y - 4, 60 * (left / CONFIG.powerupDuration[kind]), 6);
+      drawText(ctx, info.glyph, W - 80, y - 1, { size: 15, align: 'right', color: info.color });
+      y -= 22;
+    }
+  }
+
+  // -----------------------------------------------------------------------------
+  // Stage banner (fades in/out at the start of each stage)
+  // -----------------------------------------------------------------------------
+  function drawBanner(ctx, game) {
+    const b = game.banner;
+    if (b.t >= b.dur) return;
+    const stage = game.stage;
+    const a = clamp(Math.min(b.t / 0.3, (b.dur - b.t) / 0.5), 0, 1);
+    const loop = Math.floor(game.stageIndex / STAGES.length);
+
+    ctx.globalAlpha = a;
+    drawText(ctx, `STAGE ${stage.id}${loop > 0 ? `  ·  LOOP ${loop + 1}` : ''}`, W / 2, H / 2 - 80, { size: 16, color: '#9fb6d8' });
+    drawText(ctx, stage.op, W / 2, H / 2 - 20, { size: 90, color: `hsl(${stage.hue},95%,65%)`, glow: 26 });
+    drawText(ctx, stage.name, W / 2, H / 2 + 40, { size: 24, color: '#ffffff', glow: 10 });
+    drawText(ctx, stage.tagline, W / 2, H / 2 + 72, { size: 13, color: '#b9c9e6' });
+    ctx.globalAlpha = 1;
+  }
+
+  // -----------------------------------------------------------------------------
+  // Title / character select
+  // -----------------------------------------------------------------------------
+  function drawMenu(ctx, game) {
+    drawText(ctx, 'MATH', W / 2, 78, { size: 52, color: '#4dd2ff', glow: 24 });
+    drawText(ctx, 'STRIKER', W / 2, 128, { size: 52, color: '#ff6bd6', glow: 24 });
+    drawText(ctx, 'a shoot-’em-up inside a quantum computer', W / 2, 160, { size: 12, color: '#8fb3d9', weight: 'normal' });
+
+    game.cardRects = [];
+    const cw = 205;
+    const ch = 330;
+    const gap = 20;
+    const x0 = (W - (cw * 2 + gap)) / 2;
+    const y0 = 190;
+
+    CHARACTERS.forEach((c, i) => {
+      const x = x0 + i * (cw + gap);
+      const selected = game.menuIndex === i;
+      game.cardRects.push({ x, y: y0, w: cw, h: ch });
+
+      ctx.fillStyle = selected ? 'rgba(20,34,66,0.92)' : 'rgba(10,18,38,0.75)';
+      ctx.strokeStyle = selected ? c.color : 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = selected ? 3 : 1.5;
+      if (selected) { ctx.shadowColor = c.color; ctx.shadowBlur = 20; }
+      pathRoundRect(ctx, x, y0, cw, ch, 14);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      drawShip(ctx, c, x + cw / 2, y0 + 78, selected ? 1.5 + 0.05 * Math.sin(game.time * 4) : 1.3, game.time);
+      drawText(ctx, c.name, x + cw / 2, y0 + 138, { size: 22, color: c.color, glow: selected ? 10 : 0 });
+      drawText(ctx, c.role, x + cw / 2, y0 + 160, { size: 11, color: '#8fb3d9', weight: 'normal' });
+
+      c.blurb.forEach((line, li) => {
+        drawText(ctx, line, x + cw / 2, y0 + 186 + li * 16, { size: 12, color: '#d3e0f5', weight: 'normal' });
+      });
+
+      // Stat pips
+      Object.entries(c.stats).forEach(([label, val], si) => {
+        const sy = y0 + 262 + si * 17;
+        drawText(ctx, label, x + 14, sy, { size: 11, align: 'left', color: '#8fb3d9' });
+        for (let p = 0; p < 5; p++) {
+          ctx.fillStyle = p < val ? c.color : 'rgba(255,255,255,0.14)';
+          ctx.fillRect(x + 90 + p * 22, sy - 5, 18, 9);
+        }
+      });
+    });
+
+    const pulse = 0.65 + 0.35 * Math.sin(game.time * 4);
+    ctx.globalAlpha = pulse;
+    drawText(ctx, 'TAP A PILOT TO START', W / 2, 550, { size: 14, color: '#ffffff', glow: 8 });
+    ctx.globalAlpha = 1;
+
+    drawText(ctx, 'DRAG anywhere to fly  ·  your ship auto-fires', W / 2, 612, { size: 12, color: '#b9c9e6', weight: 'normal' });
+    drawText(ctx, 'tap BOMB to wipe every non-prime number', W / 2, 634, { size: 12, color: '#b9c9e6', weight: 'normal' });
+    drawText(ctx, 'tap II to pause', W / 2, 656, { size: 12, color: '#b9c9e6', weight: 'normal' });
+    drawText(ctx, 'Your SCORE is your health. Hit 0 and you are deleted.', W / 2, 676, { size: 12, color: COLORS.gold, weight: 'normal' });
+    if (game.highScore > 0) {
+      drawText(ctx, `BEST  ${game.highScore}`, W / 2, 700, { size: 12, color: '#8fb3d9' });
+    }
+  }
+
+  // -----------------------------------------------------------------------------
+  // Overlays
+  // -----------------------------------------------------------------------------
+  function drawPause(ctx) {
+    ctx.fillStyle = 'rgba(2,6,16,0.7)';
+    ctx.fillRect(0, 0, W, H);
+    drawText(ctx, 'PAUSED', W / 2, H / 2 - 20, { size: 42, color: '#ffffff', glow: 16 });
+    drawText(ctx, 'tap anywhere to resume', W / 2, H / 2 + 22, { size: 14, color: '#9fb6d8', weight: 'normal' });
+  }
+
+  function drawGameOver(ctx, game) {
+    ctx.fillStyle = 'rgba(2,6,16,0.78)';
+    ctx.fillRect(0, 0, W, H);
+    drawText(ctx, 'SCORE = 0', W / 2, H / 2 - 120, { size: 20, color: COLORS.bad });
+    drawText(ctx, 'GAME OVER', W / 2, H / 2 - 74, { size: 46, color: COLORS.bad, glow: 20 });
+
+    drawText(ctx, 'BEST SCORE REACHED', W / 2, H / 2 - 12, { size: 12, color: '#8fb3d9' });
+    drawText(ctx, String(Math.round(game.peakScore)), W / 2, H / 2 + 24, { size: 38, color: '#ffffff', glow: 10 });
+    if (game.newBest) drawText(ctx, 'NEW HIGH SCORE!', W / 2, H / 2 + 58, { size: 16, color: COLORS.gold, glow: 10 });
+    else drawText(ctx, `HIGH SCORE  ${game.highScore}`, W / 2, H / 2 + 58, { size: 13, color: '#8fb3d9' });
+
+    const mins = Math.floor(game.runTime / 60);
+    const secs = Math.floor(game.runTime % 60).toString().padStart(2, '0');
+    drawText(ctx, `survived ${mins}:${secs}  ·  reached stage ${game.stageIndex + 1}`, W / 2, H / 2 + 86, {
+      size: 12, color: '#9fb6d8', weight: 'normal',
+    });
+
+    if (game.stateTime > 0.8) {
+      drawText(ctx, 'TAP  play again', W / 2, H / 2 + 134, { size: 15, color: '#ffffff', glow: 8 });
+      drawText(ctx, 'TAP HERE  change pilot', W / 2, H / 2 + 158, { size: 13, color: '#9fb6d8', weight: 'normal' });
+    }
+  }
+  return { drawHUD, drawBanner, drawMenu, drawPause, drawGameOver };
+})();
+
+/* ======================= FILE: game.js ======================= */
+const __game = (() => {
+  // =============================================================================
+  // game.js  -  the core game loop.
+  //
+  // States:  menu -> playing <-> paused -> dying -> gameover -> (playing | menu)
+  //
+  // update(dt) advances the simulation; render() draws it. They are separate so
+  // the headless smoke test can run thousands of frames without a browser.
+  //
+  // Per-frame order while playing:
+  //   input -> player -> spawn -> move everything -> collisions -> cleanup -> death check
+  // =============================================================================
+
+  const { CONFIG, CHARACTERS } = __config;
+  const { STAGES } = __stages;
+  const { MathRules, isPrime } = __mathRules;
+  const { Spawner } = __spawner;
+  const { Player, Bullet, Particle, FloatingText, COLORS, POWERUP_INFO } = __entities;
+  const { drawText } = __draw;
+  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver } = __ui;
+
+  const W = CONFIG.width;
+  const H = CONFIG.height;
+
+  /** Circle-vs-circle overlap test used for every collision in the game. */
+  function hits(ax, ay, ar, bx, by, br) {
+    const dx = ax - bx;
+    const dy = ay - by;
+    const r = ar + br;
+    return dx * dx + dy * dy <= r * r;
+  }
+
+  class Game {
+    /**
+     * @param {HTMLCanvasElement} canvas
+     * @param {Input} input
+     * @param {Sfx} sfx
+     * @param {{dpr?: number, rng?: () => number}} options
+     */
+    constructor(canvas, input, sfx, options = {}) {
+      this.canvas = canvas;
+      this.ctx = canvas.getContext('2d');
+      this.input = input;
+      this.sfx = sfx;
+      this.dpr = options.dpr || 1;
+      this.rng = options.rng || Math.random;
+
+      this.state = 'menu';
+      this.stateTime = 0;
+      this.touchMode = true;  // mobile-only game: always show the on-screen buttons
+      this.menuIndex = 0;
+      this.cardRects = [];
+      this.time = 0;
+      this.highScore = this._loadHigh();
+      this.bgGlyphs = this._makeGlyphs();
+
+      this.startRun(CHARACTERS[0].id); // initialise all fields, then go back to the menu
+      this.state = 'menu';
+    }
+
+    // ===========================================================================
+    // Run lifecycle
+    // ===========================================================================
+
+    get stage() { return STAGES[this.stageIndex % STAGES.length]; }
+    get character() { return this.rules.character; }
+
+    /** Begin a fresh run with the given character id. */
+    startRun(characterId) {
+      const character = CHARACTERS.find((c) => c.id === characterId) || CHARACTERS[0];
+      this.rules = new MathRules(character);
+      this.player = new Player(character);
+      this.spawner = new Spawner(this.rng);
+
+      this.tokens = [];
+      this.bullets = [];
+      this.powerups = [];
+      this.particles = [];
+      this.texts = [];
+
+      this.bombs = character.bombs;
+      this.stageIndex = 0;
+      this.stageTime = 0;
+      this.runTime = 0;
+      this.difficulty = 1;
+      this.rules.setStage(this.stage, 0);
+
+      this.displayScore = character.startScore;
+      this.peakScore = character.startScore;
+      this.shake = 0;
+      this.flash = null;     // { color, t }
+      this.bombRing = null;  // { r }
+      this.deathTimer = 0;
+      this.banner = { t: 0, dur: 2.8 };
+      this.newBest = false;
+
+      this._setState('playing');
+      this.sfx.play('stage');
+    }
+
+    _setState(s) {
+      this.state = s;
+      this.stateTime = 0;
+    }
+
+    advanceStage() {
+      const cleared = this.stageIndex % STAGES.length;
+      const bonus = CONFIG.stageClearBonus * (cleared + 1);
+      this.rules.addScore(bonus);
+      this.bombs = Math.min(CONFIG.maxBombs, this.bombs + 1);
+      this.addText(W / 2, H / 2 - 40, `STAGE CLEAR  +${bonus}`, COLORS.gold, 24);
+      this.addText(W / 2, H / 2 - 12, '+1 PRIME BOMB', COLORS.violet, 16);
+
+      this.bullets = this.bullets.filter((b) => b.owner === 'player'); // wipe hostile fire
+      this.stageIndex++;
+      this.stageTime = 0;
+      this.difficulty = 1 + 0.3 * Math.floor(this.stageIndex / STAGES.length); // endless loops get harder
+      this.rules.setStage(this.stage, this.stageIndex);
+      this.banner = { t: 0, dur: 2.8 };
+      this.sfx.play('stage');
+    }
+
+    beginDeath() {
+      this._setState('dying');
+      this.deathTimer = 1.1;
+      this.burst(this.player.x, this.player.y, this.character.color, 60, 320);
+      this.burst(this.player.x, this.player.y, '#ffffff', 25, 200);
+      this.shake = 0.6;
+      this.sfx.play('gameover');
+      if (this.peakScore > this.highScore) {
+        this.highScore = this.peakScore;
+        this.newBest = true;
+        this._saveHigh();
+      }
+    }
+
+    pauseIfPlaying() {
+      if (this.state === 'playing') this._setState('paused');
+    }
+
+    // ===========================================================================
+    // Update
+    // ===========================================================================
+
+    update(dt) {
+      dt = Math.min(dt, 1 / 30); // never let a long frame tunnel through everything
+      this.time += dt;
+      this.stateTime += dt;
+      if (this.input.wasPressed('mute')) this.sfx.toggleMute();
+
+      switch (this.state) {
+        case 'menu': this.updateMenu(); break;
+        case 'playing': this.updatePlaying(dt); break;
+        case 'paused':
+          if (this.input.wasPressed('pause')) this._setState('playing');
+          break;
+        case 'dying': this.updateDying(dt); break;
+        case 'gameover':
+          if (this.stateTime > 0.8) {
+            if (this.input.wasPressed('confirm')) this.startRun(this.character.id);
+            else if (this.input.wasPressed('back')) this._setState('menu');
+          }
+          break;
+      }
+      this.input.endFrame();
+    }
+
+    updateMenu() {
+      const inp = this.input;
+      if (inp.wasPressed('left') || inp.wasPressed('up')) this.menuIndex = 0;
+      if (inp.wasPressed('right') || inp.wasPressed('down')) this.menuIndex = 1;
+      if (inp.wasPressed('pick1')) this.menuIndex = 0;
+      if (inp.wasPressed('pick2')) this.menuIndex = 1;
+      if (inp.wasPressed('confirm')) this.startRun(CHARACTERS[this.menuIndex].id);
+    }
+
+    /**
+     * Tap / click at canvas coordinates. Returns true if the tap was used by a
+     * button or screen (so main.js should NOT start a drag-to-move with it).
+     */
+    handlePointer(x, y, pointerType = 'mouse') {
+      if (pointerType === 'touch') this.touchMode = true;
+      const inRect = (r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+
+      switch (this.state) {
+        case 'menu': {
+          let used = false;
+          this.cardRects.forEach((r, i) => {
+            if (inRect(r)) { this.menuIndex = i; this.startRun(CHARACTERS[i].id); used = true; }
+          });
+          return used;
+        }
+        case 'playing':
+          // Buttons act through the same "just pressed" path as the keyboard.
+          if (inRect(CONFIG.touch.bomb)) { this.input.justPressed.add('KeyB'); return true; }
+          if (inRect(CONFIG.touch.pause)) { this.input.justPressed.add('KeyP'); return true; }
+          return false;
+        case 'paused':
+          this._setState('playing');
+          return true;
+        case 'gameover':
+          if (this.stateTime > 0.8) {
+            if (y > H / 2 + 146) this._setState('menu'); // bottom line = change pilot
+            else this.startRun(this.character.id);
+          }
+          return true;
+      }
+      return false;
+    }
+
+    updatePlaying(dt) {
+      if (this.input.wasPressed('pause')) { this._setState('paused'); return; }
+
+      this.stageTime += dt;
+      this.runTime += dt;
+      this.banner.t += dt;
+      this.rules.tick(dt);
+
+      // --- player input -------------------------------------------------------
+      this.player.update(dt, this.input);
+      if (this.input.isDown('shoot') || this.input.touch.active) { // touching = auto-fire
+        const shots = this.player.tryFire();
+        if (shots) {
+          this.bullets.push(...shots);
+          this.sfx.play('shoot');
+        }
+      }
+      if (this.input.wasPressed('bomb')) this.detonateBomb();
+
+      // --- stage progression & spawning --------------------------------------
+      if (this.stageTime >= CONFIG.stageDuration) this.advanceStage();
+      this.spawner.update(
+        dt, this.stage,
+        { intensity: this.stageTime / CONFIG.stageDuration, difficulty: this.difficulty, playerX: this.player.x },
+        this.tokens, this.powerups,
+      );
+
+      this.updateEntities(dt);
+      this.updateCollisions();
+      this.cleanup();
+
+      // --- bookkeeping & death ------------------------------------------------
+      this.peakScore = Math.max(this.peakScore, this.rules.score);
+      this.displayScore += (this.rules.score - this.displayScore) * Math.min(1, dt * 10);
+      if (this.rules.isDead()) this.beginDeath();
+    }
+
+    updateDying(dt) {
+      this.deathTimer -= dt;
+      this.updateEffects(dt);
+      this.tokens.forEach((t) => t.update(dt));
+      this.bullets.forEach((b) => b.update(dt));
+      this.displayScore += (Math.max(0, this.rules.score) - this.displayScore) * Math.min(1, dt * 10);
+      this.cleanup();
+      if (this.deathTimer <= 0) this._setState('gameover');
+    }
+
+    updateEntities(dt) {
+      const p = this.player;
+      const magnet = this.rules.magnetActive;
+
+      for (const t of this.tokens) {
+        t.update(dt);
+
+        // Hostile shooters fire subtraction operators at the player.
+        if (t.tickFire(dt)) this.enemyFire(t);
+
+        // Pi Magnet: pull every positive pickup toward the player.
+        if (magnet && t.role === 'good') {
+          const dx = p.x - t.x;
+          const dy = p.y - t.y;
+          const d = Math.hypot(dx, dy);
+          if (d < CONFIG.piMagnet.radius && d > 1) {
+            const pull = CONFIG.piMagnet.pull * (1 - d / CONFIG.piMagnet.radius) * dt;
+            t.x += (dx / d) * pull;
+            t.y += (dy / d) * pull;
+          }
+        }
+      }
+      this.bullets.forEach((b) => b.update(dt));
+      this.powerups.forEach((u) => u.update(dt));
+      this.updateEffects(dt);
+    }
+
+    updateEffects(dt) {
+      this.particles.forEach((q) => q.update(dt));
+      this.texts.forEach((q) => q.update(dt));
+      this.shake = Math.max(0, this.shake - dt * 2.2);
+      if (this.flash) {
+        this.flash.t -= dt;
+        if (this.flash.t <= 0) this.flash = null;
+      }
+      if (this.bombRing) {
+        this.bombRing.r += 1500 * dt;
+        if (this.bombRing.r > H * 1.2) this.bombRing = null;
+      }
+    }
+
+    /** A hostile shooter fires `volley` subtraction bullets aimed at the player. */
+    enemyFire(token) {
+      const n = Math.min(9, Math.abs(token.value));
+      const aim = Math.atan2(this.player.x - token.x, this.player.y - token.y); // 0 = straight down
+      const vol = token.shooter.volley;
+      const speed = 170 + 15 * this.difficulty;
+      for (let i = 0; i < vol; i++) {
+        const a = aim + (i - (vol - 1) / 2) * 0.28;
+        this.bullets.push(new Bullet({
+          x: token.x, y: token.y + 14, owner: 'enemy', kind: 'subBullet',
+          value: n, radius: 11, vx: Math.sin(a) * speed, vy: Math.cos(a) * speed,
+        }));
+      }
+    }
+
+    // ===========================================================================
+    // Collisions
+    // ===========================================================================
+
+    updateCollisions() {
+      const p = this.player;
+
+      // 1) Player shots vs hostile tokens (shots pass straight through pickups).
+      for (const b of this.bullets) {
+        if (b.dead || b.owner !== 'player') continue;
+        for (const t of this.tokens) {
+          if (t.dead || t.role !== 'bad') continue;
+          if (hits(b.x, b.y, b.radius, t.x, t.y, t.radius * 1.15)) {
+            b.dead = true;
+            t.hp -= b.damage;
+            t.flash = 0.08;
+            if (t.hp <= 0.0001) this.killToken(t);
+            else this.sfx.play('kill');
+            break;
+          }
+        }
+      }
+
+      // 2) Tokens touching the player: pickups use a bigger radius than hazards.
+      for (const t of this.tokens) {
+        if (t.dead) continue;
+        const r = t.role === 'good' ? p.collectRadius : p.hitRadius;
+        if (hits(p.x, p.y, r, t.x, t.y, t.radius)) {
+          t.dead = true;
+          this.applyResult(this.rules.resolveTouch(t), t.x, t.y, t);
+        }
+      }
+
+      // 3) Enemy subtraction bullets vs the player.
+      for (const b of this.bullets) {
+        if (b.dead || b.owner !== 'enemy') continue;
+        if (hits(p.x, p.y, p.hitRadius, b.x, b.y, b.radius)) {
+          b.dead = true;
+          this.applyResult(this.rules.resolveTouch(b), b.x, b.y, b);
+        }
+      }
+
+      // 4) Power-ups.
+      for (const u of this.powerups) {
+        if (u.dead) continue;
+        if (hits(p.x, p.y, p.collectRadius + 6, u.x, u.y, u.radius)) {
+          u.dead = true;
+          this.rules.activatePowerup(u.kind);
+          const info = POWERUP_INFO[u.kind];
+          this.addText(u.x, u.y - 10, info.name, info.color, 15);
+          this.burst(u.x, u.y, info.color, 16, 160);
+          this.sfx.play('power');
+        }
+      }
+    }
+
+    /** Show feedback for whatever MathRules decided happened. */
+    applyResult(res, x, y, source) {
+      if (!res) return;
+      const color = res.tone === 'good' ? COLORS.good : res.tone === 'bad' ? COLORS.bad : '#c8d6ee';
+      if (res.label) this.addText(x, y - 12, res.label, color, res.delta < 0 ? 20 : 17);
+
+      if (res.tone === 'bad') {
+        this.shake = Math.max(this.shake, 0.35);
+        this.flash = { color: 'rgba(255,40,80,0.35)', t: 0.18 };
+        this.burst(x, y, COLORS.bad, 14, 180);
+        this.sfx.play('hit');
+      } else if (res.tone === 'good') {
+        this.burst(x, y, COLORS.good, 10, 120);
+        this.sfx.play('pickup');
+      }
+      if (res.shrink !== undefined) this.player.shrink(res.shrink);
+    }
+
+    /** Destroy a hostile token and pay the kill reward. */
+    killToken(token) {
+      token.dead = true;
+      const res = this.rules.resolveKill(token);
+      this.addText(token.x, token.y - 6, res.label, COLORS.gold, 16);
+      this.burst(token.x, token.y, COLORS.bad, 12, 170);
+      this.sfx.play('kill');
+    }
+
+    // ===========================================================================
+    // Prime Bomb
+    // ===========================================================================
+
+    /**
+     * Eliminates every hostile token whose value is NOT prime, plus enemy bullets.
+     * Prime-valued enemies (2,3,5,7...) shrug it off and get a gold ring.
+     */
+    detonateBomb() {
+      if (this.bombs <= 0) return;
+      this.bombs--;
+      this.bombRing = { r: 0 };
+      this.flash = { color: 'rgba(255,255,255,0.5)', t: 0.3 };
+      this.shake = 0.5;
+      this.sfx.play('bomb');
+
+      let sparedAny = false;
+      for (const t of this.tokens) {
+        if (t.dead || t.role !== 'bad') continue;
+        if (t.kind === 'int' && isPrime(t.value)) {
+          t.spared = 1.5;
+          sparedAny = true;
+        } else {
+          this.killToken(t);
+        }
+      }
+      if (sparedAny) this.addText(this.player.x, this.player.y - 50, 'PRIMES SURVIVE', COLORS.gold, 15);
+
+      for (const b of this.bullets) {
+        if (b.owner !== 'enemy') continue;
+        if (CONFIG.bombSparesPrimeBullets && isPrime(b.value)) continue;
+        b.dead = true;
+        this.burst(b.x, b.y, COLORS.bad, 4, 90);
+      }
+    }
+
+    // ===========================================================================
+    // Helpers
+    // ===========================================================================
+
+    cleanup() {
+      this.tokens = this.tokens.filter((t) => !t.dead && t.y < H + 60);
+      this.bullets = this.bullets.filter((b) => !b.dead);
+      this.powerups = this.powerups.filter((u) => !u.dead);
+      this.particles = this.particles.filter((q) => !q.dead);
+      this.texts = this.texts.filter((q) => !q.dead);
+      if (this.particles.length > 400) this.particles.splice(0, this.particles.length - 400);
+    }
+
+    addText(x, y, text, color, size) {
+      this.texts.push(new FloatingText(x, y, text, color, size));
+    }
+
+    burst(x, y, color, n, speed) {
+      for (let i = 0; i < n; i++) {
+        const a = this.rng() * Math.PI * 2;
+        const s = speed * (0.3 + 0.7 * this.rng());
+        this.particles.push(new Particle(x, y, Math.cos(a) * s, Math.sin(a) * s, 0.35 + 0.5 * this.rng(), color, 2 + this.rng() * 3));
+      }
+    }
+
+    _loadHigh() {
+      try { return Number(globalThis.localStorage?.getItem(CONFIG.storageKey)) || 0; } catch { return 0; }
+    }
+
+    _saveHigh() {
+      try { globalThis.localStorage?.setItem(CONFIG.storageKey, String(this.highScore)); } catch { /* private mode */ }
+    }
+
+    _makeGlyphs() {
+      const syms = ['+', '−', '×', '÷', '=', 'π', 'Σ', '√', '∞', '0', '1', '2', '3', '5', '7', 'x²'];
+      return Array.from({ length: 26 }, () => ({
+        s: syms[Math.floor(this.rng() * syms.length)],
+        x: this.rng() * W,
+        y: this.rng() * H,
+        v: 12 + this.rng() * 30,
+        size: 12 + this.rng() * 22,
+      }));
+    }
+
+    // ===========================================================================
+    // Render
+    // ===========================================================================
+
+    render() {
+      const ctx = this.ctx;
+      ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+
+      ctx.save();
+      if (this.shake > 0) {
+        const m = this.shake * 10;
+        ctx.translate((this.rng() - 0.5) * m, (this.rng() - 0.5) * m);
+      }
+
+      this.drawBackground(ctx);
+
+      if (this.state === 'menu') {
+        drawMenu(ctx, this);
+      } else {
+        this.drawWorld(ctx);
+      }
+      ctx.restore();
+
+      // Full-screen overlays are drawn outside the shake transform.
+      if (this.state !== 'menu') {
+        if (this.flash) {
+          ctx.fillStyle = this.flash.color;
+          ctx.fillRect(0, 0, W, H);
+        }
+        this.drawLowScoreVignette(ctx);
+        drawHUD(ctx, this);
+        if (this.state === 'playing') drawBanner(ctx, this);
+        if (this.state === 'paused') drawPause(ctx, this);
+        if (this.state === 'gameover') drawGameOver(ctx, this);
+      }
+    }
+
+    drawBackground(ctx) {
+      const hue = this.state === 'menu' ? 215 : this.stage.hue;
+      const g = ctx.createLinearGradient(0, 0, 0, H);
+      g.addColorStop(0, `hsl(${hue}, 55%, 9%)`);
+      g.addColorStop(1, `hsl(${hue + 20}, 60%, 4%)`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+
+      // Scrolling "quantum grid"
+      ctx.strokeStyle = `hsla(${hue}, 80%, 60%, 0.10)`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 40) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+      const off = (this.time * 40) % 40;
+      for (let y = -40 + off; y <= H; y += 40) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+      ctx.stroke();
+
+      // Drifting math glyphs give parallax depth
+      for (const gl of this.bgGlyphs) {
+        gl.y += gl.v * 0.016;
+        if (gl.y > H + 30) { gl.y = -30; gl.x = this.rng() * W; }
+        ctx.globalAlpha = 0.07 + gl.v / 600;
+        drawText(ctx, gl.s, gl.x, gl.y, { size: gl.size, color: `hsl(${hue}, 80%, 70%)` });
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    drawWorld(ctx) {
+      this.powerups.forEach((u) => u.draw(ctx));
+      this.tokens.forEach((t) => t.draw(ctx));
+      this.bullets.forEach((b) => b.draw(ctx));
+
+      if (this.state === 'playing' || this.state === 'paused') {
+        this.drawPlayerAuras(ctx);
+        this.player.draw(ctx);
+      }
+
+      this.particles.forEach((q) => q.draw(ctx));
+      this.texts.forEach((q) => q.draw(ctx));
+
+      if (this.bombRing) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(this.player.x, this.player.y, this.bombRing.r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+
+    /** Visual rings for the three timed power-ups. */
+    drawPlayerAuras(ctx) {
+      const p = this.player;
+      const fx = this.rules.fx;
+
+      if (fx.abs > 0) {
+        ctx.strokeStyle = POWERUP_INFO.abs.color;
+        ctx.lineWidth = 2.5;
+        ctx.setLineDash([7, 6]);
+        ctx.lineDashOffset = -this.time * 40;
+        ctx.globalAlpha = fx.abs < 2 && Math.floor(this.time * 8) % 2 ? 0.3 : 0.9; // blink when expiring
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 34, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.globalAlpha = 1;
+      }
+      if (fx.pi > 0) {
+        ctx.strokeStyle = 'rgba(255,215,94,0.18)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, CONFIG.piMagnet.radius, 0, Math.PI * 2);
+        ctx.stroke();
+        drawText(ctx, 'π', p.x + 30, p.y - 26, { size: 16, color: POWERUP_INFO.pi.color, glow: 8 });
+      }
+      if (fx.sq > 0) {
+        ctx.fillStyle = `rgba(199,155,255,${0.12 + 0.06 * Math.sin(this.time * 8)})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 42, 0, Math.PI * 2);
+        ctx.fill();
+        drawText(ctx, 'x²', p.x - 32, p.y - 28, { size: 14, color: POWERUP_INFO.sq.color, glow: 8 });
+      }
+    }
+
+    drawLowScoreVignette(ctx) {
+      if (this.state !== 'playing' || this.rules.score >= CONFIG.lowScoreWarning) return;
+      const a = 0.18 + 0.12 * Math.sin(this.time * 9);
+      const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, H * 0.7);
+      g.addColorStop(0, 'rgba(255,0,40,0)');
+      g.addColorStop(1, `rgba(255,0,40,${a})`);
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+  return { Game };
+})();
+
+/* ======================= FILE: main.js ======================= */
+const __main = (() => {
+  // =============================================================================
+  // main.js  -  browser entry point. Math Striker is a MOBILE game: it is driven
+  // by touch, so on a computer we show a "use your phone" screen instead.
+  // (Add ?desktop=1 to the URL to test on a computer; mouse-drag works like a finger.)
+  // =============================================================================
+
+  const { CONFIG } = __config;
+  const { Input } = __input;
+  const { Sfx } = __audio;
+  const { Game } = __game;
+
+  const isTouchDevice = navigator.maxTouchPoints > 0 || window.matchMedia('(pointer: coarse)').matches;
+  const forceDesktop = new URLSearchParams(location.search).has('desktop');
+
+  if (isTouchDevice || forceDesktop) {
+    startGame();
+  } else {
+    document.getElementById('desktop-notice').hidden = false;
+    document.getElementById('game').hidden = true;
+  }
+
+  function startGame() {
+    const canvas = document.getElementById('game');
+
+    // Render at the screen's pixel density (capped at 2x) so text stays crisp.
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    canvas.width = CONFIG.width * dpr;
+    canvas.height = CONFIG.height * dpr;
+
+    const input = new Input(window);
+    const sfx = new Sfx();
+    const game = new Game(canvas, input, sfx, { dpr });
+
+    // Browsers only allow audio and fullscreen after a tap, so do it on the first one.
+    let firstTap = true;
+    window.addEventListener('pointerdown', () => {
+      sfx.unlock();
+      if (!firstTap) return;
+      firstTap = false;
+      try {
+        document.documentElement.requestFullscreen?.()
+          .then(() => screen.orientation?.lock?.('portrait'))
+          .catch(() => {}); // not supported (e.g. iPhone Safari): that is fine
+      } catch { /* ignore */ }
+    });
+
+    // Taps on menus/buttons go to game.handlePointer(); otherwise, while playing,
+    // dragging moves the ship (see Input.touch*).
+    const toCanvas = (e) => {
+      const rect = canvas.getBoundingClientRect();
+      return [
+        ((e.clientX - rect.left) / rect.width) * CONFIG.width,
+        ((e.clientY - rect.top) / rect.height) * CONFIG.height,
+      ];
+    };
+    canvas.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      const [x, y] = toCanvas(e);
+      const used = game.handlePointer(x, y, e.pointerType);
+      if (!used && game.state === 'playing') {
+        canvas.setPointerCapture?.(e.pointerId);
+        input.touchStart(e.pointerId, x, y);
+      }
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      const [x, y] = toCanvas(e);
+      input.touchMove(e.pointerId, x, y);
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+      canvas.addEventListener(type, (e) => input.touchEnd(e.pointerId));
+    }
+
+    // Auto-pause when the app is backgrounded so you do not lose points off-screen.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) game.pauseIfPlaying();
+    });
+
+    let last = performance.now();
+    function frame(now) {
+      const dt = (now - last) / 1000;
+      last = now;
+      game.update(dt);
+      game.render();
+      requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+
+    window.__game = game; // handy for poking at the game from a desktop console (?desktop=1)
+  }
+})();
+
+  </script>
+</body>
+</html>
