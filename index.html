@@ -3023,11 +3023,17 @@ const __mod_ui = (() => {
   // -----------------------------------------------------------------------------
   // Overlays
   // -----------------------------------------------------------------------------
-  function drawPause(ctx) {
-    ctx.fillStyle = 'rgba(2,6,16,0.7)';
+  function drawPause(ctx, game) {
+    ctx.fillStyle = 'rgba(2,6,16,0.8)';
     ctx.fillRect(0, 0, W, H);
-    drawText(ctx, 'PAUSED', W / 2, H / 2 - 20, { size: 42, color: '#ffffff', glow: 16 });
-    drawText(ctx, 'tap anywhere to resume', W / 2, H / 2 + 22, { size: 14, color: '#9fb6d8', weight: 'normal' });
+    drawText(ctx, 'PAUSED', W / 2, 200, { size: 42, color: '#ffffff', glow: 16 });
+    const bx = W / 2 - 120;
+    game.pauseButtons = [
+      { id: 'resume', ...drawButton(ctx, { x: bx, y: 280, w: 240, h: 50 }, 'RESUME', COLORS.good) },
+      { id: 'restart', ...drawButton(ctx, { x: bx, y: 346, w: 240, h: 50 }, 'RESTART GAME', COLORS.gold) },
+      { id: 'home', ...drawButton(ctx, { x: bx, y: 412, w: 240, h: 50 }, 'BACK TO HOME', '#8fb3d9') },
+    ];
+    drawText(ctx, 'Restart or Home ends this run (score is not saved).', W / 2, 490, { size: 11, color: '#9fb6d8', weight: 'normal' });
   }
 
   /** "Pick 1 of 3" upgrade cards after a boss. */
@@ -3125,8 +3131,7 @@ const __mod_ui = (() => {
 
   // -----------------------------------------------------------------------------
   // Leaderboard screen. Tabs:
-  //   PHONE   classic top 10 saved on this phone
-  //   WORLD   classic top 10 from everybody (only when an online database is set up)
+  //   CLASSIC classic top 10 (shared worldwide when the online database is set up)
   //   RANKED  this season, ONE row per name, with tiers
   // -----------------------------------------------------------------------------
   function drawLeaderboard(ctx, game) {
@@ -3136,8 +3141,8 @@ const __mod_ui = (() => {
 
     drawText(ctx, 'LEADERBOARD', W / 2, 52, { size: 30, color: COLORS.gold, glow: 16 });
 
-    const tabs = [['device', 'PHONE'], ['world', 'WORLD'], ['ranked', 'RANKED']];
-    const tab = tabs.some(([id]) => id === v.tab) ? v.tab : 'device';
+    const tabs = [['world', 'CLASSIC'], ['ranked', 'RANKED']];
+    const tab = v.tab === 'ranked' ? 'ranked' : 'world';
     const tw = (W - 44 - 10 * (tabs.length - 1)) / tabs.length;
     tabs.forEach(([id, label], i) => {
       const rect = { x: 22 + i * (tw + 10), y: 80, w: tw, h: 34 };
@@ -3155,12 +3160,15 @@ const __mod_ui = (() => {
     let rows;
     let status = 'ok';
     let caption = '';
-    if (tab === 'world') { rows = v.online.rows; status = lb.online ? v.online.status : 'off'; caption = 'everybody, all time'; }
+    if (tab === 'world') {
+      if (lb.online) { rows = v.online.rows; status = v.online.status; caption = 'classic  ·  everybody, all time'; }
+      else { rows = lb.rows(); caption = 'classic  ·  this phone only (shared board not connected)'; }
+    }
     else if (tab === 'ranked') {
       const rb = game.rankedBoard;
       if (rb.online) { rows = v.ranked.rows; status = v.ranked.status; caption = `season ${rb.season}  ·  one row per name`; }
-      else { rows = rb.localRows(); caption = `season ${rb.season}  ·  one row per name  ·  this phone`; }
-    } else { rows = lb.rows(); caption = 'top 10 saved on this phone'; }
+      else { rows = rb.localRows(); caption = `season ${rb.season}  ·  one row per name  ·  this phone only (shared board not connected)`; }
+    }
     drawText(ctx, caption, W / 2, 134, { size: 11, color: '#8fb3d9', weight: 'normal' });
 
     const y0 = 170;
@@ -3304,6 +3312,7 @@ const __mod_game = (() => {
       this.goButtons = [];
       this.upgradeRects = [];
       this.upgradeCards = [];
+      this.pauseButtons = [];
 
       this.state = 'menu';
       this.stateTime = 0;
@@ -3611,9 +3620,13 @@ const __mod_game = (() => {
           this.upgradeRects.forEach((r, i) => { if (inRect(r)) this.chooseUpgrade(i); });
           return true;
         }
-        case 'paused':
-          this._setState('playing');
+        case 'paused': {
+          const btn = buttonAt(this.pauseButtons || []);
+          if (btn?.id === 'resume') this._setState('playing');
+          else if (btn?.id === 'restart') this.startRun(this.character.id);
+          else if (btn?.id === 'home') { this.input.touchEnd(this.input.touch.id); this._setState('menu'); }
           return true;
+        }
         case 'gameover': {
           if (this.stateTime <= 0.8 || this.nameEntry) return true; // ignore accidental taps
           const btn = buttonAt(this.goButtons);
@@ -3624,7 +3637,7 @@ const __mod_game = (() => {
         }
         case 'leaderboard': {
           const btn = buttonAt(this.lbButtons);
-          if (btn?.id === 'tab-device') this.lbView.tab = 'device';
+          if (btn?.id === 'tab-device') this.lbView.tab = 'world';
           else if (btn?.id === 'tab-world') this.lbView.tab = 'world';
           else if (btn?.id === 'tab-ranked') this.lbView.tab = 'ranked';
           else if (btn?.id === 'again') this.startRun(this.character.id);
@@ -3682,7 +3695,7 @@ const __mod_game = (() => {
 
     /** Show the leaderboard. `from` = 'menu' | 'gameover'. `after` = a promise to wait for before loading WORLD scores. */
     openLeaderboard(from, highlight = null, after = null) {
-      const tab = this.mode === 'ranked' ? 'ranked' : 'device';
+      const tab = this.mode === 'ranked' ? 'ranked' : 'world';
       const view = { tab, from, highlight, online: { status: 'idle', rows: [] }, ranked: { status: 'idle', rows: [] } };
       this.lbView = view;
       this._setState('leaderboard');
