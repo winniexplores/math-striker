@@ -62,6 +62,69 @@ noscript {
 #desktop-notice p { font-size: 18px; margin: 8px 0; }
 canvas[hidden] { display: none; }
 
+/* Overlays: "open in your browser" prompt and leaderboard name box */
+input { -webkit-user-select: text; user-select: text; } /* body blocks selection; typing needs it */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(2, 6, 15, 0.94);
+  color: #d3e0f5;
+  font-family: "Courier New", ui-monospace, monospace;
+  overflow-y: auto;
+}
+.overlay[hidden] { display: none; }
+
+.card {
+  width: min(420px, 100%);
+  padding: 24px 20px;
+  text-align: center;
+  background: #07142a;
+  border: 2px solid #4dd2ff;
+  border-radius: 16px;
+  box-shadow: 0 0 30px rgba(77, 210, 255, 0.25);
+}
+.card h2 { margin: 0 0 12px; font-size: 21px; letter-spacing: 1px; color: #ffd75e; text-shadow: 0 0 12px #ffd75e; }
+.card p { margin: 10px 0; font-size: 15px; line-height: 1.45; }
+.card p.big { margin: 4px 0 12px; font-size: 44px; font-weight: bold; color: #fff; text-shadow: 0 0 14px #4dd2ff; }
+.card p.link { word-break: break-all; font-size: 13px; color: #5dffb0; -webkit-user-select: text; user-select: text; }
+.card p.link[hidden] { display: none; }
+
+.btn {
+  display: block;
+  width: 100%;
+  margin: 12px 0 0;
+  padding: 14px 10px;
+  font: bold 16px "Courier New", ui-monospace, monospace;
+  color: #fff;
+  text-align: center;
+  text-decoration: none;
+  background: #0c2142;
+  border: 2px solid #4dd2ff;
+  border-radius: 12px;
+  cursor: pointer;
+}
+.btn[hidden] { display: none; }
+.btn.primary { color: #5dffb0; border-color: #5dffb0; }
+.btn.ghost { color: #9fb6d8; border-color: #5b7497; background: transparent; }
+
+.card input {
+  width: 100%;
+  padding: 14px 10px;
+  font: bold 20px "Courier New", ui-monospace, monospace; /* 16px+ stops iPhone zooming in */
+  text-align: center;
+  color: #fff;
+  background: #020a18;
+  border: 2px solid #4dd2ff;
+  border-radius: 12px;
+  outline: none;
+}
+.card input:focus { border-color: #ffd75e; }
+
   </style>
 </head>
 <body>
@@ -73,19 +136,46 @@ canvas[hidden] { display: none; }
       <p>Open this page on your phone to play.</p>
     </section>
   </main>
+  <!-- Shown inside Messenger / Facebook / Instagram's built-in browser -->
+  <section id="inapp-notice" class="overlay" hidden>
+    <div class="card">
+      <h2>OPEN IN YOUR BROWSER</h2>
+      <p>You opened this link inside <strong id="inapp-app">Messenger</strong>. Its built-in browser can break sound, fullscreen and your saved scores.</p>
+      <p id="inapp-help"></p>
+      <a id="inapp-open" class="btn primary" href="#" hidden>OPEN IN CHROME</a>
+      <button id="inapp-copy" class="btn" type="button">COPY LINK</button>
+      <p id="inapp-link" class="link" hidden></p>
+      <button id="inapp-continue" class="btn ghost" type="button">CONTINUE ANYWAY</button>
+    </div>
+  </section>
+
+  <!-- Shown after a game when the score makes the leaderboard -->
+  <section id="name-entry" class="overlay" hidden>
+    <form id="name-form" class="card" autocomplete="off">
+      <h2>NEW LEADERBOARD SCORE!</h2>
+      <p class="big" id="name-score">0</p>
+      <p>Type your name for the leaderboard:</p>
+      <input id="name-input" type="text" maxlength="12" placeholder="YOUR NAME" autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="done">
+      <button class="btn primary" type="submit">SAVE SCORE</button>
+      <button id="name-skip" class="btn ghost" type="button">SKIP</button>
+    </form>
+  </section>
+
   <noscript>Math Striker needs JavaScript enabled.</noscript>
   <script>
 /* ====================================================================
    MATH STRIKER - everything in one file.
    Tip: use Ctrl+F (or the search icon) to jump to a "FILE:" marker below.
-   FILE: config.js   = numbers, pilots, colours of the pilots
+   FILE: config.js   = numbers, pilots, lives, obstacles, leaderboard settings
    FILE: stages.js   = the 4 stages
    FILE: entities.js = how numbers/bullets/power-ups look
    FILE: draw.js     = ship shapes
-   FILE: ui.js       = menu, score bar, buttons
+   FILE: ui.js       = menu, score bar, buttons, leaderboard screen
+   FILE: leaderboard.js = high-score saving (and the optional online board)
+   FILE: inapp.js    = the open-in-your-browser check for Messenger etc.
    ==================================================================== */
 /* ======================= FILE: config.js ======================= */
-const __config = (() => {
+const __mod_config = (() => {
   // =============================================================================
   // config.js  -  every tunable number in one place.
   // Change values here to rebalance the game without touching any logic.
@@ -133,6 +223,32 @@ const __config = (() => {
       dragSensitivity: 1.3,                      // ship moves this much per pixel dragged
       bomb: { x: 8, y: 660, w: 130, h: 50 },
       pause: { x: 420, y: 66, w: 52, h: 40 },
+    },
+
+    // --- Lives & obstacles --------------------------------------------------------
+    // Obstacles are orange METEORS and striped WALLS. They cannot be shot and they
+    // cost one life. Your score is still your health: score 0 = game over too.
+    startLives: 3,
+    maxLives: 3,              // lives can never go above this (heart pickups stop here)
+    invulnSecs: 2,            // after losing a life you cannot lose another for this long
+    scoreZeroCostsLife: false,// true: score hitting 0 costs a life and refills half your
+                              //       starting score, instead of ending the run at once
+    lifePickupInterval: [30, 45], // seconds between heart drops (only when below max lives)
+    obstacles: {
+      meteorRadius: 24,
+      wallHeight: 22,
+      wallGap: 150,           // width of the safe gap in a wall (your ship is ~40 wide)
+    },
+
+    // --- Leaderboard --------------------------------------------------------------
+    leaderboard: {
+      size: 10,               // rows kept and shown
+      nameMax: 12,            // longest name
+      storageKey: 'mathStriker.leaderboard.v1',
+      // Paste a Firebase Realtime Database URL here to turn on the shared WORLD
+      // board, for example 'https://my-game-default-rtdb.firebaseio.com'
+      // Leave it empty ('') for a this-device-only leaderboard.
+      onlineUrl: '',
     },
 
     // --- Misc -------------------------------------------------------------------
@@ -184,7 +300,7 @@ const __config = (() => {
 })();
 
 /* ======================= FILE: stages.js ======================= */
-const __stages = (() => {
+const __mod_stages = (() => {
   // =============================================================================
   // stages.js  -  data-driven stage definitions.
   //
@@ -201,6 +317,7 @@ const __stages = (() => {
   // shooterChance : chance a hostile integer carries a gun (fires -n bullets)
   // shooterVolley : bullets per shot (fan spread)
   // fallSpeed     : [min, max] pixels per second
+  // obstacles     : { interval: [min, max] seconds between orange rocks/walls, wallChance: 0..1 }
   // =============================================================================
 
   const STAGES = [
@@ -214,6 +331,7 @@ const __stages = (() => {
       fallSpeed: [70, 120],
       shooterChance: 0.12,
       shooterVolley: 1,
+      obstacles: { interval: [9, 13], wallChance: 0 }, // seconds between rocks/walls, share that are walls
       table: [
         { kind: 'int', sign: +1, min: 1, max: 9, weight: 5 },
         { kind: 'int', sign: -1, min: 1, max: 9, weight: 3.5 },
@@ -229,6 +347,7 @@ const __stages = (() => {
       fallSpeed: [75, 125],
       shooterChance: 0.55,
       shooterVolley: 3,
+      obstacles: { interval: [8, 12], wallChance: 0.2 }, // seconds between rocks/walls, share that are walls
       table: [
         { kind: 'int', sign: +1, min: 1, max: 6, weight: 3 },
         { kind: 'int', sign: -1, min: 2, max: 9, weight: 4 },
@@ -244,6 +363,7 @@ const __stages = (() => {
       fallSpeed: [80, 135],
       shooterChance: 0.15,
       shooterVolley: 1,
+      obstacles: { interval: [7, 11], wallChance: 0.3 }, // seconds between rocks/walls, share that are walls
       table: [
         { kind: 'int', sign: +1, min: 1, max: 9, weight: 3 },
         { kind: 'int', sign: -1, min: 1, max: 9, weight: 1.2 },
@@ -262,6 +382,7 @@ const __stages = (() => {
       fallSpeed: [85, 140],
       shooterChance: 0.22,
       shooterVolley: 2,
+      obstacles: { interval: [6.5, 10], wallChance: 0.35 }, // seconds between rocks/walls, share that are walls
       table: [
         { kind: 'int', sign: +1, min: 1, max: 9, weight: 3 },
         { kind: 'int', sign: -1, min: 1, max: 9, weight: 1.5 },
@@ -276,12 +397,12 @@ const __stages = (() => {
 })();
 
 /* ======================= FILE: draw.js ======================= */
-const __draw = (() => {
+const __mod_draw = (() => {
   // =============================================================================
   // draw.js  -  small canvas helpers shared by entities and UI.
   // =============================================================================
 
-  const { CONFIG } = __config;
+  const { CONFIG } = __mod_config;
 
   /**
    * Draw centered/aligned text with an optional neon glow.
@@ -299,6 +420,29 @@ const __draw = (() => {
     }
     ctx.fillText(str, x, y);
     ctx.shadowBlur = 0;
+  }
+
+  /** A heart shape centred on (x, y). `s` is its size; filled = life left, outline = life lost. */
+  function drawHeart(ctx, x, y, s, color, filled = true) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.beginPath();
+    ctx.moveTo(0, s * 0.95);
+    ctx.bezierCurveTo(-s * 1.7, -s * 0.1, -s * 0.8, -s * 1.3, 0, -s * 0.4);
+    ctx.bezierCurveTo(s * 0.8, -s * 1.3, s * 1.7, -s * 0.1, 0, s * 0.95);
+    ctx.closePath();
+    if (filled) {
+      ctx.shadowColor = color;
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = color;
+      ctx.fill();
+    } else {
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.4;
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   /** Trace (but do not fill) a rounded rectangle path. Works in every browser. */
@@ -362,11 +506,11 @@ const __draw = (() => {
 
     ctx.restore();
   }
-  return { drawText, pathRoundRect, drawShip };
+  return { drawText, drawHeart, pathRoundRect, drawShip };
 })();
 
 /* ======================= FILE: audio.js ======================= */
-const __audio = (() => {
+const __mod_audio = (() => {
   // =============================================================================
   // audio.js  -  tiny synthesized sound effects (no audio files needed).
   // Browsers only allow audio after a user gesture, so main.js calls unlock()
@@ -430,7 +574,7 @@ const __audio = (() => {
 })();
 
 /* ======================= FILE: input.js ======================= */
-const __input = (() => {
+const __mod_input = (() => {
   // =============================================================================
   // input.js  -  keyboard handling with "held" and "just pressed" queries.
   //
@@ -459,6 +603,9 @@ const __input = (() => {
   // Keys whose default browser behaviour (page scroll) must be suppressed.
   const PREVENT_DEFAULT = new Set(['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Space']);
 
+  /** True when a key event comes from a text box (the leaderboard name field). */
+  const isTyping = (e) => /^(INPUT|TEXTAREA)$/.test(e.target?.tagName || '');
+
   class Input {
     /** @param {EventTarget} target  usually `window`; any EventTarget works (tests pass a stub) */
     constructor(target = globalThis) {
@@ -476,12 +623,14 @@ const __input = (() => {
     }
 
     handleKeyDown(e) {
+      if (isTyping(e)) return; // the player is typing a name: leave the keys alone
       if (PREVENT_DEFAULT.has(e.code) && e.preventDefault) e.preventDefault();
       if (!this.held.has(e.code)) this.justPressed.add(e.code); // ignore auto-repeat
       this.held.add(e.code);
     }
 
     handleKeyUp(e) {
+      if (isTyping(e)) return;
       this.held.delete(e.code);
     }
 
@@ -522,7 +671,7 @@ const __input = (() => {
 })();
 
 /* ======================= FILE: mathRules.js ======================= */
-const __mathRules = (() => {
+const __mod_mathRules = (() => {
   // =============================================================================
   // mathRules.js  -  the Math Rules Manager.
   //
@@ -543,7 +692,7 @@ const __mathRules = (() => {
   // so the Game can show floating text, play sounds and shake the screen.
   // =============================================================================
 
-  const { CONFIG } = __config;
+  const { CONFIG } = __mod_config;
 
   const MINUS = '−';
   const TIMES = '×';
@@ -732,7 +881,7 @@ const __mathRules = (() => {
 })();
 
 /* ======================= FILE: entities.js ======================= */
-const __entities = (() => {
+const __mod_entities = (() => {
   // =============================================================================
   // entities.js  -  everything that exists on the playfield.
   //
@@ -746,8 +895,8 @@ const __entities = (() => {
   // mathRules.js and collisions live in game.js.
   // =============================================================================
 
-  const { CONFIG } = __config;
-  const { drawText, drawShip, pathRoundRect } = __draw;
+  const { CONFIG } = __mod_config;
+  const { drawText, drawShip, drawHeart, pathRoundRect } = __mod_draw;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -765,6 +914,8 @@ const __entities = (() => {
     pink: '#ff6bd6',
     violet: '#b58cff',
     ink: '#07101f',
+    heart: '#ff5d8f',
+    hazard: '#ff9f43', // orange = obstacle: costs a LIFE
   };
 
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
@@ -970,6 +1121,7 @@ const __entities = (() => {
     abs: { glyph: '|x|', color: '#7df9ff', name: 'ABSOLUTE SHIELD' },
     pi: { glyph: 'π', color: '#ffd75e', name: 'PI MAGNET' },
     sq: { glyph: 'x²', color: '#c79bff', name: 'EXPONENT' },
+    life: { glyph: '♥', color: '#ff5d8f', name: 'EXTRA LIFE' }, // instant, not timed
   };
 
   class PowerUp {
@@ -1003,8 +1155,137 @@ const __entities = (() => {
       ctx.fill();
       ctx.stroke();
       ctx.shadowBlur = 0;
-      drawText(ctx, info.glyph, 0, 1, { size: 20, color: info.color });
+      if (this.kind === 'life') drawHeart(ctx, 0, 1, 8.5, info.color);
+      else drawText(ctx, info.glyph, 0, 1, { size: 20, color: info.color });
       ctx.restore();
+    }
+  }
+
+  // -----------------------------------------------------------------------------
+  // Obstacle: indestructible hazards that cost a LIFE (not score).
+  //   meteor : a spinning orange rock that falls straight down.
+  //   wall   : a full-width striped bar with one gap you must fly through.
+  // Player shots are absorbed by both. Prime Bombs do not remove them.
+  // -----------------------------------------------------------------------------
+  class Obstacle {
+    /**
+     * meteor spec: { kind:'meteor', x, vy, spin, jitter:[9 numbers 0..1] }
+     * wall   spec: { kind:'wall', gapX, gapW, vy }
+     */
+    constructor(spec) {
+      this.kind = spec.kind;
+      this.vy = spec.vy ?? 120;
+      this.t = 0;
+      this.dead = false;
+      if (this.kind === 'meteor') {
+        this.x = spec.x;
+        this.y = -40;
+        this.radius = CONFIG.obstacles.meteorRadius;
+        this.spin = spec.spin ?? 1;
+        const jit = spec.jitter || [0.5, 0.1, 0.9, 0.3, 0.7, 0.2, 0.8, 0.4, 0.6];
+        // Lumpy outline: nine points at slightly different distances from the centre
+        this.pts = jit.map((j, i) => {
+          const a = (i / jit.length) * Math.PI * 2;
+          const r = this.radius * (0.8 + 0.3 * j);
+          return [Math.cos(a) * r, Math.sin(a) * r];
+        });
+      } else {
+        this.gapX = spec.gapX;
+        this.gapW = spec.gapW ?? CONFIG.obstacles.wallGap;
+        this.h = CONFIG.obstacles.wallHeight;
+        this.y = -this.h;
+      }
+    }
+
+    update(dt) {
+      this.t += dt;
+      this.y += this.vy * dt;
+      if (this.y > H + 60) this.dead = true;
+    }
+
+    /** Does a circle (the ship's core, or a bullet) touch this obstacle? */
+    touchesCircle(cx, cy, cr) {
+      if (this.kind === 'meteor') {
+        // slightly forgiving: the hit area is a bit smaller than the drawn rock
+        const r = this.radius * 0.85 + cr;
+        const dx = cx - this.x;
+        const dy = cy - this.y;
+        return dx * dx + dy * dy <= r * r;
+      }
+      const top = this.y - this.h / 2;
+      const bottom = this.y + this.h / 2;
+      const left = this.gapX - this.gapW / 2;
+      const right = this.gapX + this.gapW / 2;
+      const nearY = clamp(cy, top, bottom);
+      const dy = cy - nearY;
+      // two solid bars: [0, left] and [right, W]
+      const hitBar = (x0, x1) => {
+        const dx = cx - clamp(cx, x0, x1);
+        return dx * dx + dy * dy <= cr * cr;
+      };
+      return hitBar(0, left) || hitBar(right, W);
+    }
+
+    draw(ctx) {
+      const c = COLORS.hazard;
+      if (this.kind === 'meteor') {
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.rotate(this.t * this.spin);
+        ctx.shadowColor = c;
+        ctx.shadowBlur = 16;
+        ctx.fillStyle = '#2b1707';
+        ctx.strokeStyle = c;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        this.pts.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        // cracks
+        ctx.strokeStyle = 'rgba(255,159,67,0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(-8, -10); ctx.lineTo(0, 0); ctx.lineTo(9, 7);
+        ctx.moveTo(0, 0); ctx.lineTo(-4, 12);
+        ctx.stroke();
+        ctx.restore();
+        drawText(ctx, '!', this.x, this.y + 1, { size: 20, color: c });
+        return;
+      }
+
+      // wall: two striped bars either side of the gap
+      const top = this.y - this.h / 2;
+      ctx.shadowColor = c;
+      ctx.shadowBlur = 14;
+      this._bar(ctx, 0, this.gapX - this.gapW / 2, top);
+      this._bar(ctx, this.gapX + this.gapW / 2, W, top);
+      ctx.shadowBlur = 0;
+    }
+
+    _bar(ctx, x0, x1, top) {
+      if (x1 - x0 < 2) return;
+      const h = this.h;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x0, top, x1 - x0, h);
+      ctx.clip();
+      ctx.fillStyle = '#1d1305';
+      ctx.fillRect(x0, top, x1 - x0, h);
+      ctx.strokeStyle = COLORS.hazard;
+      ctx.lineWidth = 7;
+      ctx.beginPath();
+      const off = (this.t * 30) % 28;
+      for (let sx = x0 - h - 28 + off; sx < x1 + 28; sx += 28) {
+        ctx.moveTo(sx, top + h);
+        ctx.lineTo(sx + h, top);
+      }
+      ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = '#ffd9a0';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x0, top, x1 - x0, h);
     }
   }
 
@@ -1125,11 +1406,11 @@ const __entities = (() => {
       drawShip(ctx, this.character, this.x, this.y, this.sizeScale, this.t);
     }
   }
-  return { MINUS, TIMES, DIVIDE, COLORS, Bullet, Token, POWERUP_INFO, PowerUp, Particle, FloatingText, Player };
+  return { MINUS, TIMES, DIVIDE, COLORS, Bullet, Token, POWERUP_INFO, PowerUp, Obstacle, Particle, FloatingText, Player };
 })();
 
 /* ======================= FILE: spawner.js ======================= */
-const __spawner = (() => {
+const __mod_spawner = (() => {
   // =============================================================================
   // spawner.js  -  decides WHAT falls from the top and WHEN.
   //
@@ -1137,8 +1418,8 @@ const __spawner = (() => {
   // the current stage's weighted table (stages.js).
   // =============================================================================
 
-  const { CONFIG } = __config;
-  const { Token, PowerUp } = __entities;
+  const { CONFIG } = __mod_config;
+  const { Token, PowerUp, Obstacle } = __mod_entities;
 
   const W = CONFIG.width;
 
@@ -1152,6 +1433,13 @@ const __spawner = (() => {
     reset() {
       this.timer = 0.9;
       this.powerTimer = this._nextPowerTime();
+      this.obstacleTimer = 7;   // grace period before the first rock or wall
+      this.lifeTimer = this._nextLifeTime();
+    }
+
+    _nextLifeTime() {
+      const [lo, hi] = CONFIG.lifePickupInterval;
+      return lo + (hi - lo) * this.rng();
     }
 
     _nextPowerTime() {
@@ -1162,11 +1450,12 @@ const __spawner = (() => {
     /**
      * Called every frame.
      * @param {object} stage   current stage definition
-     * @param {object} ctx     { intensity: 0..1 progress through the stage, difficulty: >= 1, playerX }
+     * @param {object} ctx     { intensity: 0..1 progress through the stage, difficulty: >= 1, playerX, lives }
      * @param {Token[]} tokens     output list for new tokens
      * @param {PowerUp[]} powerups output list for new power-ups
+     * @param {Obstacle[]} obstacles output list for new rocks and walls
      */
-    update(dt, stage, ctx, tokens, powerups) {
+    update(dt, stage, ctx, tokens, powerups, obstacles = []) {
       // --- tokens: spawn faster as the stage progresses and as loops increase ---
       this.timer -= dt;
       if (this.timer <= 0) {
@@ -1183,6 +1472,44 @@ const __spawner = (() => {
         const kind = kinds[Math.floor(this.rng() * kinds.length)];
         powerups.push(new PowerUp(kind, 40 + this.rng() * (W - 80)));
       }
+
+      // --- obstacles: orange rocks and walls that cost a life ------------------
+      if (stage.obstacles) {
+        this.obstacleTimer -= dt;
+        if (this.obstacleTimer <= 0) {
+          const [lo, hi] = stage.obstacles.interval;
+          this.obstacleTimer = (lo + (hi - lo) * this.rng()) / ctx.difficulty;
+          obstacles.push(this._makeObstacle(stage, ctx));
+        }
+      }
+
+      // --- hearts: only drop while the player is missing a life ----------------
+      this.lifeTimer -= dt;
+      if (this.lifeTimer <= 0) {
+        this.lifeTimer = this._nextLifeTime();
+        if ((ctx.lives ?? CONFIG.maxLives) < CONFIG.maxLives) {
+          powerups.push(new PowerUp('life', 40 + this.rng() * (W - 80)));
+        }
+      }
+    }
+
+    _makeObstacle(stage, ctx) {
+      const r = (a, b) => a + (b - a) * this.rng();
+      const speedUp = 0.9 + 0.1 * ctx.difficulty;
+
+      if (this.rng() < (stage.obstacles.wallChance || 0)) {
+        const gapW = CONFIG.obstacles.wallGap;
+        const margin = gapW / 2 + 15;
+        return new Obstacle({ kind: 'wall', gapX: r(margin, W - margin), gapW, vy: r(80, 100) * speedUp });
+      }
+
+      // Rocks are often aimed at where the player is right now, so hiding is not an option.
+      const aimed = ctx.playerX !== undefined && this.rng() < 0.6;
+      const x = aimed ? Math.max(30, Math.min(W - 30, ctx.playerX + r(-30, 30))) : r(30, W - 30);
+      return new Obstacle({
+        kind: 'meteor', x, vy: r(130, 180) * speedUp, spin: r(-2, 2),
+        jitter: Array.from({ length: 9 }, () => this.rng()),
+      });
     }
 
     /** Weighted random pick from a stage table. */
@@ -1269,21 +1596,244 @@ const __spawner = (() => {
   return { Spawner };
 })();
 
+/* ======================= FILE: leaderboard.js ======================= */
+const __mod_leaderboard = (() => {
+  // =============================================================================
+  // leaderboard.js  -  high-score table. No drawing code, so it is easy to test.
+  //
+  // TWO boards:
+  //   * THIS DEVICE : always on. Saved in the browser's localStorage (top 10).
+  //   * WORLD       : optional. Turns on when CONFIG.leaderboard.onlineUrl is set
+  //                   to a Firebase Realtime Database URL (see README, "Online
+  //                   leaderboard"). GitHub Pages can only host static files, so a
+  //                   shared board needs an outside database like this one.
+  //
+  // A score row looks like: { name, score, pilot, stage, t }   (t = timestamp)
+  // =============================================================================
+
+  const { CONFIG } = __mod_config;
+
+  /** Make a player-typed name safe and short. Empty names become PLAYER. */
+  function cleanName(raw) {
+    let s = String(raw ?? '')
+      .replace(/[\u0000-\u001f\u007f<>]/g, '') // control characters and angle brackets
+      .replace(/\s+/g, ' ')
+      .trim();
+    s = Array.from(s).slice(0, CONFIG.leaderboard.nameMax).join('');
+    return s || 'PLAYER';
+  }
+
+  /** Only https:// URLs are accepted; a trailing slash or ".json" is removed. */
+  function normalizeUrl(u) {
+    const s = String(u ?? '').trim().replace(/\.json$/i, '').replace(/\/+$/, '');
+    return /^https:\/\/[^\s]+$/i.test(s) ? s : '';
+  }
+
+  function safeStorage() {
+    try { return globalThis.localStorage ?? null; } catch { return null; }
+  }
+
+  const isRow = (r) => r && typeof r.name === 'string' && Number.isFinite(r.score);
+  const byScoreDesc = (a, b) => b.score - a.score || (a.t || 0) - (b.t || 0); // ties: older first
+  const tidy = (r) => ({
+    name: cleanName(r.name),
+    score: Math.round(r.score),
+    pilot: typeof r.pilot === 'string' ? r.pilot : '',
+    stage: Number.isFinite(r.stage) ? r.stage : 1,
+    t: Number.isFinite(r.t) ? r.t : 0,
+  });
+
+  class Leaderboard {
+    /**
+     * @param {{storage?: Storage|null, key?: string, size?: number,
+     *          onlineUrl?: string, fetchFn?: Function}} opts   (all optional; tests inject fakes)
+     */
+    constructor(opts = {}) {
+      this.storage = opts.storage !== undefined ? opts.storage : safeStorage();
+      this.key = opts.key || CONFIG.leaderboard.storageKey;
+      this.size = opts.size || CONFIG.leaderboard.size;
+      this.onlineUrl = normalizeUrl(opts.onlineUrl ?? CONFIG.leaderboard.onlineUrl);
+      this.fetchFn = opts.fetchFn || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+      this.memory = []; // fallback when localStorage is blocked (private mode, etc.)
+    }
+
+    /** True when the WORLD board is configured and the browser can reach it. */
+    get online() { return Boolean(this.onlineUrl && this.fetchFn); }
+
+    // ---- this device ----------------------------------------------------------
+
+    rows() {
+      let list = this.memory;
+      if (this.storage) {
+        try {
+          const parsed = JSON.parse(this.storage.getItem(this.key) || '[]');
+          if (Array.isArray(parsed)) list = parsed;
+        } catch { /* corrupted data: start fresh */ }
+      }
+      return list.filter(isRow).map(tidy).sort(byScoreDesc).slice(0, this.size);
+    }
+
+    /** Would this score earn a place in the top list? */
+    qualifies(score) {
+      score = Math.round(score);
+      if (!(score > 0)) return false;
+      const rows = this.rows();
+      return rows.length < this.size || score > rows[rows.length - 1].score;
+    }
+
+    /**
+     * Save a score. Returns the saved row plus `rank` (1 = best, 0 = it did not
+     * make the top list).
+     */
+    add(entry) {
+      const row = tidy({ ...entry, t: entry.t ?? Date.now() });
+      const rows = this.rows();
+      // Insert below existing rows with an equal score (earlier score keeps its place)
+      let idx = rows.findIndex((r) => row.score > r.score);
+      if (idx === -1) idx = rows.length;
+      rows.splice(idx, 0, row);
+      const kept = rows.slice(0, this.size);
+      this._write(kept);
+      return { ...row, rank: idx < this.size ? idx + 1 : 0 };
+    }
+
+    _write(rows) {
+      this.memory = rows;
+      if (!this.storage) return;
+      try { this.storage.setItem(this.key, JSON.stringify(rows)); } catch { /* storage full or blocked */ }
+    }
+
+    /** The last name this player typed (to pre-fill the box next time). */
+    get lastName() {
+      try { return this.storage?.getItem(`${this.key}.name`) || ''; } catch { return ''; }
+    }
+
+    set lastName(name) {
+      try { this.storage?.setItem(`${this.key}.name`, name); } catch { /* ignore */ }
+    }
+
+    // ---- world (optional) -----------------------------------------------------
+
+    /** Send one score to the online board. Resolves true/false, never throws. */
+    async submitOnline(entry) {
+      if (!this.online) return false;
+      const body = JSON.stringify(tidy(entry));
+      try {
+        const res = await this.fetchFn(`${this.onlineUrl}/scores.json`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+        });
+        return Boolean(res && res.ok);
+      } catch {
+        return false;
+      }
+    }
+
+    /** Top scores from the online board. Resolves an array, or null if unreachable. */
+    async fetchOnline() {
+      if (!this.online) return null;
+      try {
+        // Firebase REST: ask for the highest `score` values (needs ".indexOn": "score")
+        const query = `orderBy=${encodeURIComponent('"score"')}&limitToLast=${this.size}`;
+        const res = await this.fetchFn(`${this.onlineUrl}/scores.json?${query}`);
+        if (!res || !res.ok) return null;
+        const data = await res.json();
+        if (!data || typeof data !== 'object') return [];
+        return Object.values(data).filter(isRow).map(tidy).sort(byScoreDesc).slice(0, this.size);
+      } catch {
+        return null;
+      }
+    }
+  }
+  return { cleanName, normalizeUrl, Leaderboard };
+})();
+
+/* ======================= FILE: inapp.js ======================= */
+const __mod_inapp = (() => {
+  // =============================================================================
+  // inapp.js  -  detect "in-app browsers" (the mini browser inside Messenger,
+  // Facebook, Instagram ...). When someone taps a link in Messenger, the game
+  // opens in that mini browser, where sound, fullscreen and saved scores can be
+  // unreliable. main.js shows a "open in your browser" prompt when this matches.
+  // No DOM code here, so it is easy to test.
+  // =============================================================================
+
+  // Order matters: Messenger's user-agent also contains Facebook markers.
+  const IN_APP_BROWSERS = [
+    ['Messenger', /FB_IAB\/MESSENGER|MessengerForiOS|MessengerLite|Orca-Android|\bMESSENGER\b/i],
+    ['Facebook', /FBAN|FBAV|FB_IAB|FBIOS/i],
+    ['Instagram', /Instagram/i],
+    ['TikTok', /musical_ly|BytedanceWebview|TikTok/i],
+    ['Snapchat', /Snapchat/i],
+    ['LINE', /\bLine\//i],
+    ['WeChat', /MicroMessenger/i],
+    ['Viber', /Viber/i],
+  ];
+
+  /** Returns the app's name (for example "Messenger"), or null for a normal browser. */
+  function detectInAppBrowser(ua = '') {
+    for (const [name, re] of IN_APP_BROWSERS) {
+      if (re.test(ua)) return name;
+    }
+    return null;
+  }
+
+  /** 'android' | 'ios' | 'other' */
+  function detectPlatform(ua = '') {
+    if (/android/i.test(ua)) return 'android';
+    if (/iphone|ipad|ipod/i.test(ua)) return 'ios';
+    return 'other';
+  }
+
+  /**
+   * Android only: a link that asks the phone to open this page in Chrome.
+   * `loc` is window.location (or any object with protocol, host, pathname, search).
+   */
+  function chromeIntentUrl(loc) {
+    const scheme = String(loc.protocol || 'https:').replace(':', '');
+    return `intent://${loc.host}${loc.pathname}${loc.search || ''}#Intent;scheme=${scheme};package=com.android.chrome;end`;
+  }
+
+  /** Plain-language steps for the prompt. */
+  function inAppHelp(platform) {
+    if (platform === 'ios') return 'Tap the ••• or share button, then choose "Open in Safari".';
+    if (platform === 'android') return 'Tap the ⋮ menu (top right), then choose "Open in Chrome" or "Open in browser".';
+    return 'Open this link in your phone’s normal browser (Chrome or Safari).';
+  }
+  return { detectInAppBrowser, detectPlatform, chromeIntentUrl, inAppHelp };
+})();
+
 /* ======================= FILE: ui.js ======================= */
-const __ui = (() => {
+const __mod_ui = (() => {
   // =============================================================================
   // ui.js  -  HUD, menu and overlay screens. Pure drawing, no game logic.
   // Each function receives the 2D context and the Game to read state from.
   // =============================================================================
 
-  const { CONFIG, CHARACTERS } = __config;
-  const { STAGES } = __stages;
-  const { drawText, drawShip, pathRoundRect } = __draw;
-  const { POWERUP_INFO, COLORS } = __entities;
+  const { CONFIG, CHARACTERS } = __mod_config;
+  const { STAGES } = __mod_stages;
+  const { drawText, drawShip, drawHeart, pathRoundRect } = __mod_draw;
+  const { POWERUP_INFO, COLORS } = __mod_entities;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  /** A tappable rounded button. Returns its rect so the caller can register it. */
+  function drawButton(ctx, rect, label, color = '#4dd2ff') {
+    ctx.fillStyle = 'rgba(10,20,44,0.88)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 10;
+    pathRoundRect(ctx, rect.x, rect.y, rect.w, rect.h, 12);
+    ctx.fill();
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+    drawText(ctx, label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1, { size: 17, color });
+    return rect;
+  }
 
   // -----------------------------------------------------------------------------
   // In-game HUD
@@ -1308,6 +1858,11 @@ const __ui = (() => {
     ctx.fillRect(W / 2 - 60, 24, 140, 4);
     ctx.fillStyle = `hsl(${stage.hue},90%,60%)`;
     ctx.fillRect(W / 2 - 60, 24, 140 * prog, 4);
+
+    // Lives: filled heart = life left, faint outline = life lost
+    for (let i = 0; i < CONFIG.maxLives; i++) {
+      drawHeart(ctx, W / 2 + 10 + (i - (CONFIG.maxLives - 1) / 2) * 26, 41, 6.5, COLORS.heart, i < game.lives);
+    }
 
     const m = r.effectiveMultiplier;
     drawText(ctx, 'MULT', W - 14, 13, { size: 10, align: 'right', color: '#8fb3d9' });
@@ -1432,15 +1987,18 @@ const __ui = (() => {
 
     const pulse = 0.65 + 0.35 * Math.sin(game.time * 4);
     ctx.globalAlpha = pulse;
-    drawText(ctx, 'TAP A PILOT TO START', W / 2, 550, { size: 14, color: '#ffffff', glow: 8 });
+    drawText(ctx, 'TAP A PILOT TO START', W / 2, 543, { size: 14, color: '#ffffff', glow: 8 });
     ctx.globalAlpha = 1;
 
-    drawText(ctx, 'DRAG anywhere to fly  ·  your ship auto-fires', W / 2, 612, { size: 12, color: '#b9c9e6', weight: 'normal' });
-    drawText(ctx, 'tap BOMB to wipe every non-prime number', W / 2, 634, { size: 12, color: '#b9c9e6', weight: 'normal' });
-    drawText(ctx, 'tap II to pause', W / 2, 656, { size: 12, color: '#b9c9e6', weight: 'normal' });
-    drawText(ctx, 'Your SCORE is your health. Hit 0 and you are deleted.', W / 2, 676, { size: 12, color: COLORS.gold, weight: 'normal' });
+    game.menuButtons = [
+      { id: 'board', ...drawButton(ctx, { x: W / 2 - 105, y: 558, w: 210, h: 42 }, 'LEADERBOARD', COLORS.gold) },
+    ];
+
+    drawText(ctx, 'DRAG to fly  ·  auto-fire  ·  tap BOMB for a Prime Bomb', W / 2, 624, { size: 12, color: '#b9c9e6', weight: 'normal' });
+    drawText(ctx, `Orange rocks and walls cost a LIFE. You have ${CONFIG.maxLives}.`, W / 2, 644, { size: 12, color: COLORS.hazard, weight: 'normal' });
+    drawText(ctx, 'Your SCORE is your health. Hit 0 and you are deleted.', W / 2, 666, { size: 12, color: COLORS.gold, weight: 'normal' });
     if (game.highScore > 0) {
-      drawText(ctx, `BEST  ${game.highScore}`, W / 2, 700, { size: 12, color: '#8fb3d9' });
+      drawText(ctx, `BEST  ${game.highScore}`, W / 2, 692, { size: 12, color: '#8fb3d9' });
     }
   }
 
@@ -1455,36 +2013,132 @@ const __ui = (() => {
   }
 
   function drawGameOver(ctx, game) {
-    ctx.fillStyle = 'rgba(2,6,16,0.78)';
+    ctx.fillStyle = 'rgba(2,6,16,0.84)';
     ctx.fillRect(0, 0, W, H);
-    drawText(ctx, 'SCORE = 0', W / 2, H / 2 - 120, { size: 20, color: COLORS.bad });
-    drawText(ctx, 'GAME OVER', W / 2, H / 2 - 74, { size: 46, color: COLORS.bad, glow: 20 });
 
-    drawText(ctx, 'BEST SCORE REACHED', W / 2, H / 2 - 12, { size: 12, color: '#8fb3d9' });
-    drawText(ctx, String(Math.round(game.peakScore)), W / 2, H / 2 + 24, { size: 38, color: '#ffffff', glow: 10 });
-    if (game.newBest) drawText(ctx, 'NEW HIGH SCORE!', W / 2, H / 2 + 58, { size: 16, color: COLORS.gold, glow: 10 });
-    else drawText(ctx, `HIGH SCORE  ${game.highScore}`, W / 2, H / 2 + 58, { size: 13, color: '#8fb3d9' });
+    if (game.deathReason === 'lives') {
+      drawText(ctx, 'OUT OF LIVES', W / 2, 150, { size: 20, color: COLORS.hazard });
+      for (let i = 0; i < CONFIG.maxLives; i++) drawHeart(ctx, W / 2 + (i - 1) * 30, 186, 8, COLORS.heart, false);
+    } else {
+      drawText(ctx, 'SCORE = 0', W / 2, 165, { size: 20, color: COLORS.bad });
+    }
+    drawText(ctx, 'GAME OVER', W / 2, 232, { size: 46, color: COLORS.bad, glow: 20 });
+
+    drawText(ctx, 'BEST SCORE REACHED', W / 2, 296, { size: 12, color: '#8fb3d9' });
+    drawText(ctx, String(Math.round(game.peakScore)), W / 2, 334, { size: 38, color: '#ffffff', glow: 10 });
+    if (game.newBest) drawText(ctx, 'NEW HIGH SCORE!', W / 2, 368, { size: 16, color: COLORS.gold, glow: 10 });
+    else drawText(ctx, `HIGH SCORE  ${game.highScore}`, W / 2, 368, { size: 13, color: '#8fb3d9' });
 
     const mins = Math.floor(game.runTime / 60);
     const secs = Math.floor(game.runTime % 60).toString().padStart(2, '0');
-    drawText(ctx, `survived ${mins}:${secs}  ·  reached stage ${game.stageIndex + 1}`, W / 2, H / 2 + 86, {
+    drawText(ctx, `survived ${mins}:${secs}  ·  reached stage ${game.stageIndex + 1}`, W / 2, 396, {
       size: 12, color: '#9fb6d8', weight: 'normal',
     });
+    if (game.lastRow && game.lastRow.rank > 0) {
+      drawText(ctx, `You are #${game.lastRow.rank} on this phone`, W / 2, 420, { size: 13, color: COLORS.gold });
+    }
 
-    if (game.stateTime > 0.8) {
-      drawText(ctx, 'TAP  play again', W / 2, H / 2 + 134, { size: 15, color: '#ffffff', glow: 8 });
-      drawText(ctx, 'TAP HERE  change pilot', W / 2, H / 2 + 158, { size: 13, color: '#9fb6d8', weight: 'normal' });
+    game.goButtons = [];
+    if (game.stateTime > 0.8 && !game.nameEntry) {
+      const bx = W / 2 - 120;
+      game.goButtons = [
+        { id: 'again', ...drawButton(ctx, { x: bx, y: 462, w: 240, h: 46 }, 'PLAY AGAIN', '#ffffff') },
+        { id: 'board', ...drawButton(ctx, { x: bx, y: 520, w: 240, h: 46 }, 'LEADERBOARD', COLORS.gold) },
+        { id: 'menu', ...drawButton(ctx, { x: bx, y: 578, w: 240, h: 46 }, 'CHANGE PILOT', '#8fb3d9') },
+      ];
     }
   }
-  return { drawHUD, drawBanner, drawMenu, drawPause, drawGameOver };
+
+  // -----------------------------------------------------------------------------
+  // Leaderboard screen: top 10 on this phone, plus a WORLD tab when an online
+  // database is configured (CONFIG.leaderboard.onlineUrl).
+  // -----------------------------------------------------------------------------
+  function drawLeaderboard(ctx, game) {
+    const v = game.lbView;
+    const lb = game.leaderboard;
+    game.lbButtons = [];
+
+    drawText(ctx, 'LEADERBOARD', W / 2, 56, { size: 32, color: COLORS.gold, glow: 16 });
+
+    const tab = lb.online ? v.tab : 'device';
+    if (lb.online) {
+      [['tab-device', 'THIS PHONE', W / 2 - 165], ['tab-world', 'WORLD', W / 2 + 5]].forEach(([id, label, x]) => {
+        const active = (id === 'tab-world') === (tab === 'world');
+        const rect = { x, y: 88, w: 160, h: 34 };
+        ctx.fillStyle = active ? 'rgba(255,215,94,0.2)' : 'rgba(10,20,44,0.7)';
+        ctx.strokeStyle = active ? COLORS.gold : 'rgba(255,255,255,0.2)';
+        ctx.lineWidth = 2;
+        pathRoundRect(ctx, rect.x, rect.y, rect.w, rect.h, 10);
+        ctx.fill();
+        ctx.stroke();
+        drawText(ctx, label, x + 80, 106, { size: 14, color: active ? COLORS.gold : '#8fb3d9' });
+        game.lbButtons.push({ id, ...rect });
+      });
+    } else {
+      drawText(ctx, 'top 10 saved on this phone', W / 2, 100, { size: 12, color: '#8fb3d9', weight: 'normal' });
+    }
+
+    let rows;
+    let status = 'ok';
+    if (tab === 'world') { rows = v.online.rows; status = v.online.status; } else { rows = lb.rows(); }
+
+    const y0 = 152;
+    const step = 40;
+    if (status === 'loading' || status === 'idle') {
+      drawText(ctx, 'Loading...', W / 2, 300, { size: 18, color: '#9fb6d8' });
+    } else if (status === 'error') {
+      drawText(ctx, 'Could not reach the online board.', W / 2, 290, { size: 16, color: COLORS.bad });
+      drawText(ctx, 'Check your internet and try again later.', W / 2, 318, { size: 12, color: '#9fb6d8', weight: 'normal' });
+    } else if (rows.length === 0) {
+      drawText(ctx, 'No scores yet.', W / 2, 290, { size: 20, color: '#e8f0ff' });
+      drawText(ctx, 'Be the first on the board!', W / 2, 322, { size: 13, color: '#9fb6d8', weight: 'normal' });
+    } else {
+      rows.forEach((r, i) => {
+        const y = y0 + i * step;
+        const hl = v.highlight && r.t === v.highlight.t && r.score === v.highlight.score && r.name === v.highlight.name;
+        if (hl) {
+          ctx.fillStyle = 'rgba(255,215,94,0.2)';
+          ctx.strokeStyle = COLORS.gold;
+          ctx.lineWidth = 2;
+          pathRoundRect(ctx, 22, y - 17, W - 44, 34, 9);
+          ctx.fill();
+          ctx.stroke();
+        } else if (i % 2 === 0) {
+          ctx.fillStyle = 'rgba(255,255,255,0.045)';
+          pathRoundRect(ctx, 22, y - 17, W - 44, 34, 9);
+          ctx.fill();
+        }
+        const medal = ['#ffd75e', '#d6dde8', '#d79b64'][i] || '#8fb3d9';
+        const dot = CHARACTERS.find((c) => c.id === r.pilot)?.color || '#8fb3d9';
+        drawText(ctx, String(i + 1), 52, y, { size: 18, color: medal, align: 'right' });
+        ctx.fillStyle = dot;
+        ctx.beginPath();
+        ctx.arc(72, y, 6, 0, Math.PI * 2);
+        ctx.fill();
+        drawText(ctx, r.name, 90, y, { size: 17, color: hl ? COLORS.gold : '#e8f0ff', align: 'left' });
+        drawText(ctx, String(r.score), W - 40, y, { size: 18, color: hl ? COLORS.gold : '#ffffff', align: 'right' });
+      });
+    }
+
+    if (v.from === 'gameover') {
+      game.lbButtons.push(
+        { id: 'again', ...drawButton(ctx, { x: W / 2 - 175, y: 600, w: 170, h: 48 }, 'PLAY AGAIN', '#ffffff') },
+        { id: 'menu', ...drawButton(ctx, { x: W / 2 + 5, y: 600, w: 170, h: 48 }, 'MENU', '#8fb3d9') },
+      );
+    } else {
+      game.lbButtons.push({ id: 'back', ...drawButton(ctx, { x: W / 2 - 100, y: 600, w: 200, h: 48 }, 'BACK', '#ffffff') });
+    }
+  }
+  return { drawHUD, drawBanner, drawMenu, drawPause, drawGameOver, drawLeaderboard };
 })();
 
 /* ======================= FILE: game.js ======================= */
-const __game = (() => {
+const __mod_game = (() => {
   // =============================================================================
   // game.js  -  the core game loop.
   //
   // States:  menu -> playing <-> paused -> dying -> gameover -> (playing | menu)
+  //          and 'leaderboard' (opened from the menu or the game-over screen)
   //
   // update(dt) advances the simulation; render() draws it. They are separate so
   // the headless smoke test can run thousands of frames without a browser.
@@ -1493,13 +2147,14 @@ const __game = (() => {
   //   input -> player -> spawn -> move everything -> collisions -> cleanup -> death check
   // =============================================================================
 
-  const { CONFIG, CHARACTERS } = __config;
-  const { STAGES } = __stages;
-  const { MathRules, isPrime } = __mathRules;
-  const { Spawner } = __spawner;
-  const { Player, Bullet, Particle, FloatingText, COLORS, POWERUP_INFO } = __entities;
-  const { drawText } = __draw;
-  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver } = __ui;
+  const { CONFIG, CHARACTERS } = __mod_config;
+  const { STAGES } = __mod_stages;
+  const { MathRules, isPrime } = __mod_mathRules;
+  const { Spawner } = __mod_spawner;
+  const { Player, Bullet, Particle, FloatingText, COLORS, POWERUP_INFO } = __mod_entities;
+  const { drawText } = __mod_draw;
+  const { Leaderboard, cleanName } = __mod_leaderboard;
+  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard } = __mod_ui;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -1517,7 +2172,8 @@ const __game = (() => {
      * @param {HTMLCanvasElement} canvas
      * @param {Input} input
      * @param {Sfx} sfx
-     * @param {{dpr?: number, rng?: () => number}} options
+     * @param {{dpr?: number, rng?: () => number, leaderboard?: Leaderboard,
+     *          askName?: (lastName: string, score: number) => Promise<string|null>}} options
      */
     constructor(canvas, input, sfx, options = {}) {
       this.canvas = canvas;
@@ -1526,6 +2182,12 @@ const __game = (() => {
       this.sfx = sfx;
       this.dpr = options.dpr || 1;
       this.rng = options.rng || Math.random;
+      this.leaderboard = options.leaderboard || new Leaderboard();
+      this.askName = options.askName || null; // main.js shows the "enter your name" box
+      this.lbView = { tab: 'device', from: 'menu', highlight: null, online: { status: 'idle', rows: [] } };
+      this.lbButtons = []; // tap targets, filled in while drawing each screen
+      this.menuButtons = [];
+      this.goButtons = [];
 
       this.state = 'menu';
       this.stateTime = 0;
@@ -1557,9 +2219,15 @@ const __game = (() => {
       this.tokens = [];
       this.bullets = [];
       this.powerups = [];
+      this.obstacles = [];
       this.particles = [];
       this.texts = [];
 
+      this.lives = CONFIG.startLives;
+      this.invuln = 0;        // seconds of protection left after losing a life
+      this.deathReason = '';  // 'score' or 'lives'
+      this.nameEntry = false; // true while the "enter your name" box is open
+      this.lastRow = null;    // the score row just saved (highlighted on the leaderboard)
       this.bombs = character.bombs;
       this.stageIndex = 0;
       this.stageTime = 0;
@@ -1602,7 +2270,8 @@ const __game = (() => {
       this.sfx.play('stage');
     }
 
-    beginDeath() {
+    beginDeath(reason = 'score') {
+      this.deathReason = reason;
       this._setState('dying');
       this.deathTimer = 1.1;
       this.burst(this.player.x, this.player.y, this.character.color, 60, 320);
@@ -1638,10 +2307,13 @@ const __game = (() => {
           break;
         case 'dying': this.updateDying(dt); break;
         case 'gameover':
-          if (this.stateTime > 0.8) {
+          if (this.stateTime > 0.8 && !this.nameEntry) {
             if (this.input.wasPressed('confirm')) this.startRun(this.character.id);
             else if (this.input.wasPressed('back')) this._setState('menu');
           }
+          break;
+        case 'leaderboard':
+          if (this.input.wasPressed('back') || this.input.wasPressed('confirm')) this.closeLeaderboard();
           break;
       }
       this.input.endFrame();
@@ -1664,8 +2336,11 @@ const __game = (() => {
       if (pointerType === 'touch') this.touchMode = true;
       const inRect = (r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 
+      const buttonAt = (list) => list.find(inRect);
+
       switch (this.state) {
         case 'menu': {
+          if (buttonAt(this.menuButtons)) { this.openLeaderboard('menu'); return true; }
           let used = false;
           this.cardRects.forEach((r, i) => {
             if (inRect(r)) { this.menuIndex = i; this.startRun(CHARACTERS[i].id); used = true; }
@@ -1680,14 +2355,73 @@ const __game = (() => {
         case 'paused':
           this._setState('playing');
           return true;
-        case 'gameover':
-          if (this.stateTime > 0.8) {
-            if (y > H / 2 + 146) this._setState('menu'); // bottom line = change pilot
-            else this.startRun(this.character.id);
-          }
+        case 'gameover': {
+          if (this.stateTime <= 0.8 || this.nameEntry) return true; // ignore accidental taps
+          const btn = buttonAt(this.goButtons);
+          if (btn?.id === 'again') this.startRun(this.character.id);
+          else if (btn?.id === 'board') this.openLeaderboard('gameover', this.lastRow);
+          else if (btn?.id === 'menu') this._setState('menu');
           return true;
+        }
+        case 'leaderboard': {
+          const btn = buttonAt(this.lbButtons);
+          if (btn?.id === 'tab-device') this.lbView.tab = 'device';
+          else if (btn?.id === 'tab-world') this.lbView.tab = 'world';
+          else if (btn?.id === 'again') this.startRun(this.character.id);
+          else if (btn?.id === 'menu') this._setState('menu');
+          else if (btn?.id === 'back') this.closeLeaderboard();
+          return true;
+        }
       }
       return false;
+    }
+
+    // ===========================================================================
+    // Game over -> name box -> leaderboard
+    // ===========================================================================
+
+    _enterGameOver() {
+      this._setState('gameover');
+      const score = Math.round(this.peakScore);
+      const wantsName = score > 0 && (this.leaderboard.qualifies(score) || this.leaderboard.online);
+      if (!this.askName || !wantsName) return;
+
+      const entry = { score, pilot: this.character.id, stage: this.stageIndex + 1 };
+      this.nameEntry = true; // blocks the game-over buttons until the box is closed
+      Promise.resolve()
+        .then(() => this.askName(this.leaderboard.lastName, score))
+        .catch(() => null)
+        .then((name) => this._finishNameEntry(entry, name));
+    }
+
+    _finishNameEntry(entry, name) {
+      this.nameEntry = false;
+      if (name == null || this.state !== 'gameover') return; // skipped
+      const clean = cleanName(name);
+      this.leaderboard.lastName = clean;
+      const saved = this.leaderboard.add({ ...entry, name: clean });
+      this.lastRow = saved;
+      const sent = this.leaderboard.online ? this.leaderboard.submitOnline(saved) : null;
+      this.openLeaderboard('gameover', saved, sent);
+    }
+
+    /** Show the leaderboard. `from` = 'menu' | 'gameover'. `after` = a promise to wait for before loading WORLD scores. */
+    openLeaderboard(from, highlight = null, after = null) {
+      const view = { tab: 'device', from, highlight, online: { status: 'idle', rows: [] } };
+      this.lbView = view;
+      this._setState('leaderboard');
+      if (this.leaderboard.online) {
+        view.online.status = 'loading';
+        Promise.resolve(after)
+          .then(() => this.leaderboard.fetchOnline())
+          .then((rows) => { view.online = rows ? { status: 'ok', rows } : { status: 'error', rows: [] }; })
+          .catch(() => { view.online = { status: 'error', rows: [] }; });
+      }
+    }
+
+    closeLeaderboard() {
+      this._setState(this.lbView.from === 'gameover' ? 'gameover' : 'menu');
+      this.stateTime = 1; // buttons work straight away
     }
 
     updatePlaying(dt) {
@@ -1697,6 +2431,7 @@ const __game = (() => {
       this.runTime += dt;
       this.banner.t += dt;
       this.rules.tick(dt);
+      this.invuln = Math.max(0, this.invuln - dt);
 
       // --- player input -------------------------------------------------------
       this.player.update(dt, this.input);
@@ -1713,8 +2448,11 @@ const __game = (() => {
       if (this.stageTime >= CONFIG.stageDuration) this.advanceStage();
       this.spawner.update(
         dt, this.stage,
-        { intensity: this.stageTime / CONFIG.stageDuration, difficulty: this.difficulty, playerX: this.player.x },
-        this.tokens, this.powerups,
+        {
+          intensity: this.stageTime / CONFIG.stageDuration, difficulty: this.difficulty,
+          playerX: this.player.x, lives: this.lives,
+        },
+        this.tokens, this.powerups, this.obstacles,
       );
 
       this.updateEntities(dt);
@@ -1724,17 +2462,23 @@ const __game = (() => {
       // --- bookkeeping & death ------------------------------------------------
       this.peakScore = Math.max(this.peakScore, this.rules.score);
       this.displayScore += (this.rules.score - this.displayScore) * Math.min(1, dt * 10);
-      if (this.rules.isDead()) this.beginDeath();
+      if (this.lives <= 0) {
+        this.beginDeath('lives');
+      } else if (this.rules.isDead()) {
+        if (CONFIG.scoreZeroCostsLife && this.lives > 1) this.scoreWipeout();
+        else this.beginDeath('score');
+      }
     }
 
     updateDying(dt) {
       this.deathTimer -= dt;
       this.updateEffects(dt);
       this.tokens.forEach((t) => t.update(dt));
+      this.obstacles.forEach((o) => o.update(dt));
       this.bullets.forEach((b) => b.update(dt));
       this.displayScore += (Math.max(0, this.rules.score) - this.displayScore) * Math.min(1, dt * 10);
       this.cleanup();
-      if (this.deathTimer <= 0) this._setState('gameover');
+      if (this.deathTimer <= 0) this._enterGameOver();
     }
 
     updateEntities(dt) {
@@ -1761,6 +2505,7 @@ const __game = (() => {
       }
       this.bullets.forEach((b) => b.update(dt));
       this.powerups.forEach((u) => u.update(dt));
+      this.obstacles.forEach((o) => o.update(dt));
       this.updateEffects(dt);
     }
 
@@ -1800,6 +2545,18 @@ const __game = (() => {
     updateCollisions() {
       const p = this.player;
 
+      // 0) Obstacles cannot be destroyed: they swallow player shots.
+      for (const b of this.bullets) {
+        if (b.dead || b.owner !== 'player') continue;
+        for (const o of this.obstacles) {
+          if (o.touchesCircle(b.x, b.y, b.radius)) {
+            b.dead = true;
+            this.burst(b.x, b.y, COLORS.hazard, 3, 80);
+            break;
+          }
+        }
+      }
+
       // 1) Player shots vs hostile tokens (shots pass straight through pickups).
       for (const b of this.bullets) {
         if (b.dead || b.owner !== 'player') continue;
@@ -1835,18 +2592,67 @@ const __game = (() => {
         }
       }
 
-      // 4) Power-ups.
+      // 4) Power-ups (timed ones go to MathRules; the heart gives a life straight away).
       for (const u of this.powerups) {
         if (u.dead) continue;
         if (hits(p.x, p.y, p.collectRadius + 6, u.x, u.y, u.radius)) {
           u.dead = true;
-          this.rules.activatePowerup(u.kind);
           const info = POWERUP_INFO[u.kind];
-          this.addText(u.x, u.y - 10, info.name, info.color, 15);
+          if (u.kind === 'life') {
+            this.gainLife(u.x, u.y);
+          } else {
+            this.rules.activatePowerup(u.kind);
+            this.addText(u.x, u.y - 10, info.name, info.color, 15);
+          }
           this.burst(u.x, u.y, info.color, 16, 160);
           this.sfx.play('power');
         }
       }
+
+      // 5) Obstacles vs the player: costs one life, then 2 seconds of protection.
+      if (this.invuln <= 0) {
+        for (const o of this.obstacles) {
+          if (!o.dead && o.touchesCircle(p.x, p.y, p.hitRadius)) {
+            this.loseLife(o);
+            break;
+          }
+        }
+      }
+    }
+
+    /** An obstacle hit the ship. Death itself is decided later in updatePlaying. */
+    loseLife(obstacle) {
+      const p = this.player;
+      this.lives = Math.max(0, this.lives - 1);
+      this.invuln = CONFIG.invulnSecs;
+      if (obstacle.kind === 'meteor') obstacle.dead = true; // the rock shatters
+      this.shake = 0.7;
+      this.flash = { color: 'rgba(255,159,67,0.4)', t: 0.25 };
+      this.burst(p.x, p.y, COLORS.hazard, 30, 260);
+      this.addText(p.x, p.y - 34, this.lives > 0 ? '-1 LIFE' : 'NO LIVES LEFT', COLORS.hazard, 22);
+      this.sfx.play('hit');
+    }
+
+    /** A heart was collected. Lives can never go above CONFIG.maxLives. */
+    gainLife(x, y) {
+      if (this.lives < CONFIG.maxLives) {
+        this.lives++;
+        this.addText(x, y - 10, '+1 LIFE', COLORS.heart, 18);
+      } else {
+        this.rules.addScore(25);
+        this.addText(x, y - 10, 'LIVES FULL +25', COLORS.heart, 15);
+      }
+    }
+
+    /** Optional rule (CONFIG.scoreZeroCostsLife): score hit 0, so lose a life and refill half. */
+    scoreWipeout() {
+      this.lives--;
+      this.rules.score = Math.ceil(this.character.startScore / 2);
+      this.invuln = CONFIG.invulnSecs;
+      this.shake = 0.6;
+      this.flash = { color: 'rgba(255,40,80,0.4)', t: 0.3 };
+      this.addText(this.player.x, this.player.y - 34, 'SCORE 0: -1 LIFE', COLORS.bad, 20);
+      this.sfx.play('hit');
     }
 
     /** Show feedback for whatever MathRules decided happened. */
@@ -1920,6 +2726,7 @@ const __game = (() => {
       this.tokens = this.tokens.filter((t) => !t.dead && t.y < H + 60);
       this.bullets = this.bullets.filter((b) => !b.dead);
       this.powerups = this.powerups.filter((u) => !u.dead);
+      this.obstacles = this.obstacles.filter((o) => !o.dead);
       this.particles = this.particles.filter((q) => !q.dead);
       this.texts = this.texts.filter((q) => !q.dead);
       if (this.particles.length > 400) this.particles.splice(0, this.particles.length - 400);
@@ -1972,15 +2779,13 @@ const __game = (() => {
 
       this.drawBackground(ctx);
 
-      if (this.state === 'menu') {
-        drawMenu(ctx, this);
-      } else {
-        this.drawWorld(ctx);
-      }
+      if (this.state === 'menu') drawMenu(ctx, this);
+      else if (this.state === 'leaderboard') drawLeaderboard(ctx, this);
+      else this.drawWorld(ctx);
       ctx.restore();
 
       // Full-screen overlays are drawn outside the shake transform.
-      if (this.state !== 'menu') {
+      if (this.state !== 'menu' && this.state !== 'leaderboard') {
         if (this.flash) {
           ctx.fillStyle = this.flash.color;
           ctx.fillRect(0, 0, W, H);
@@ -1994,7 +2799,7 @@ const __game = (() => {
     }
 
     drawBackground(ctx) {
-      const hue = this.state === 'menu' ? 215 : this.stage.hue;
+      const hue = this.state === 'menu' || this.state === 'leaderboard' ? 215 : this.stage.hue;
       const g = ctx.createLinearGradient(0, 0, 0, H);
       g.addColorStop(0, `hsl(${hue}, 55%, 9%)`);
       g.addColorStop(1, `hsl(${hue + 20}, 60%, 4%)`);
@@ -2021,13 +2826,17 @@ const __game = (() => {
     }
 
     drawWorld(ctx) {
+      this.obstacles.forEach((o) => o.draw(ctx));
       this.powerups.forEach((u) => u.draw(ctx));
       this.tokens.forEach((t) => t.draw(ctx));
       this.bullets.forEach((b) => b.draw(ctx));
 
       if (this.state === 'playing' || this.state === 'paused') {
         this.drawPlayerAuras(ctx);
+        // blink while protected after losing a life
+        if (this.invuln > 0 && Math.floor(this.time * 14) % 2 === 0) ctx.globalAlpha = 0.3;
         this.player.draw(ctx);
+        ctx.globalAlpha = 1;
       }
 
       this.particles.forEach((q) => q.draw(ctx));
@@ -2090,30 +2899,121 @@ const __game = (() => {
 })();
 
 /* ======================= FILE: main.js ======================= */
-const __main = (() => {
+const __mod_main = (() => {
   // =============================================================================
-  // main.js  -  browser entry point. Math Striker is a MOBILE game: it is driven
-  // by touch, so on a computer we show a "use your phone" screen instead.
-  // (Add ?desktop=1 to the URL to test on a computer; mouse-drag works like a finger.)
+  // main.js  -  browser entry point. Math Striker is a MOBILE game driven by touch:
+  //   * on a computer we show a "use your phone" screen instead
+  //   * inside Messenger / Facebook / Instagram's built-in browser we first ask
+  //     the player to open the page in their normal browser
+  //   * after a game, a box asks for the player's name (leaderboard)
+  // Test helpers: add ?desktop=1 to play on a computer (mouse drag = finger),
+  //               add ?inapp=1 to preview the "open in your browser" prompt.
   // =============================================================================
 
-  const { CONFIG } = __config;
-  const { Input } = __input;
-  const { Sfx } = __audio;
-  const { Game } = __game;
+  const { CONFIG } = __mod_config;
+  const { Input } = __mod_input;
+  const { Sfx } = __mod_audio;
+  const { Game } = __mod_game;
+  const { detectInAppBrowser, detectPlatform, chromeIntentUrl, inAppHelp } = __mod_inapp;
+
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  const session = {
+    get(k) { try { return sessionStorage.getItem(k); } catch { return null; } },
+    set(k, v) { try { sessionStorage.setItem(k, v); } catch { /* ignore */ } },
+  };
 
   const isTouchDevice = navigator.maxTouchPoints > 0 || window.matchMedia('(pointer: coarse)').matches;
-  const forceDesktop = new URLSearchParams(location.search).has('desktop');
+  const forceDesktop = params.has('desktop');
+  const inApp = params.has('inapp') ? 'Messenger' : detectInAppBrowser(navigator.userAgent);
 
-  if (isTouchDevice || forceDesktop) {
-    startGame();
+  if (!isTouchDevice && !forceDesktop) {
+    $('desktop-notice').hidden = false;
+    $('game').hidden = true;
+  } else if (inApp && (params.has('inapp') || !session.get('ms.inapp.ok'))) {
+    showInAppPrompt(inApp);
   } else {
-    document.getElementById('desktop-notice').hidden = false;
-    document.getElementById('game').hidden = true;
+    startGame();
   }
 
+  // -----------------------------------------------------------------------------
+  // "Open in your browser" prompt
+  // -----------------------------------------------------------------------------
+  function showInAppPrompt(appName) {
+    const platform = detectPlatform(navigator.userAgent);
+    $('game').hidden = true;
+    $('inapp-app').textContent = appName;
+    $('inapp-help').textContent = inAppHelp(platform);
+
+    if (platform === 'android') {
+      $('inapp-open').href = chromeIntentUrl(location); // asks Android to open Chrome
+      $('inapp-open').hidden = false;
+    }
+
+    const plainLink = location.origin + location.pathname; // without ?inapp=1
+    $('inapp-copy').onclick = async () => {
+      const ok = await copyText(plainLink);
+      $('inapp-copy').textContent = ok ? 'LINK COPIED - PASTE IT IN YOUR BROWSER' : 'PRESS AND HOLD THE LINK BELOW TO COPY';
+      $('inapp-link').textContent = plainLink;
+      $('inapp-link').hidden = false;
+    };
+    $('inapp-continue').onclick = () => {
+      session.set('ms.inapp.ok', '1');
+      $('inapp-notice').hidden = true;
+      $('game').hidden = false;
+      startGame();
+    };
+    $('inapp-notice').hidden = false;
+  }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      try { // older webviews: select a temporary text box and copy
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        const ok = document.execCommand('copy');
+        ta.remove();
+        return ok;
+      } catch { return false; }
+    }
+  }
+
+  // -----------------------------------------------------------------------------
+  // Leaderboard name box. Resolves the typed name, or null if the player skips.
+  // -----------------------------------------------------------------------------
+  function askName(lastName, score) {
+    return new Promise((resolve) => {
+      const box = $('name-entry');
+      const input = $('name-input');
+      $('name-score').textContent = String(score);
+      input.value = lastName || '';
+      input.maxLength = CONFIG.leaderboard.nameMax;
+      box.hidden = false;
+      setTimeout(() => input.focus(), 60);
+
+      const done = (value) => {
+        box.hidden = true;
+        $('name-form').onsubmit = null;
+        $('name-skip').onclick = null;
+        resolve(value);
+      };
+      $('name-form').onsubmit = (e) => { e.preventDefault(); done(input.value); };
+      $('name-skip').onclick = () => done(null);
+    });
+  }
+
+  // -----------------------------------------------------------------------------
+  // The game
+  // -----------------------------------------------------------------------------
   function startGame() {
-    const canvas = document.getElementById('game');
+    const canvas = $('game');
 
     // Render at the screen's pixel density (capped at 2x) so text stays crisp.
     const dpr = Math.min(window.devicePixelRatio || 1, 2);
@@ -2122,7 +3022,7 @@ const __main = (() => {
 
     const input = new Input(window);
     const sfx = new Sfx();
-    const game = new Game(canvas, input, sfx, { dpr });
+    const game = new Game(canvas, input, sfx, { dpr, askName });
 
     // Browsers only allow audio and fullscreen after a tap, so do it on the first one.
     let firstTap = true;
