@@ -193,18 +193,11 @@ const __mod_config = (() => {
     maxBombs: 5,
 
     // --- Math rules -------------------------------------------------------------
-    maxMultiplier: 16,        // cap for the running multiplier
-    maxEffectiveMultiplier: 64, // cap after the x^2 power-up squares it
-    multiplierDecaySecs: 10,  // multiplier halves every N seconds unless you grab another xk
-    dangerPerStage: 0.35,     // every hazard hurts (1 + this*stagesCleared) times more
-    hazardPercent: 0.04,      // a size-9 hazard also takes this share of your CURRENT score
-                              // (smaller hazards take proportionally less). Keeps big scores fragile.
-    zeroPercent: 0.03,        // extra share of current score lost to a 0
+    gainCapPct: 0.25, gainCapMin: 10, gainCapMax: 150, // x and / stages: most one catch can add
+    maxScore: 999999,         // the score can never go above this
+    dangerPerStage: 0.35,     // enemy "-n" bullets hurt (1 + this*stagesCleared) times more
+    hazardPercent: 0.04,      // a size-9 bullet also takes this share of your CURRENT score
     aimedSpawnChance: 0.35,   // chance a hostile number spawns right above the player
-    zeroPenalty: 12,          // score lost when you touch a 0 (also resets multiplier)
-    negMultRate: 0.10,        // touching x(-k) costs score * rate * k ...
-    negMultMaxFraction: 0.40, // ... but never more than this share of your score
-    divSeverity: 0.40,        // touching a divisor/fraction f costs score*(1-f)*severity
     shrinkMin: 0.6,           // ship never shrinks below 60% size
     shrinkRecoverPerSec: 0.12,
 
@@ -214,7 +207,9 @@ const __mod_config = (() => {
     bombSparesPrimeBullets: false,
 
     // --- Power-ups --------------------------------------------------------------
-    powerupDuration: { abs: 8, pi: 8, sq: 8 }, // seconds
+    powerupDuration: { abs: 8, pi: 8, sq: 8, slow: 6 }, // seconds (slow-time counts game seconds)
+    slowFactor: 0.55,         // SLOW TIME power-up: the whole game runs at this speed
+    loopDifficultyStep: 0.18, // each full loop of 4 stages adds this much difficulty
     powerupInterval: [14, 22],                 // random gap between power-up drops
     piMagnet: { radius: 230, pull: 560 },
 
@@ -235,7 +230,7 @@ const __mod_config = (() => {
     formations: { first: 10, interval: [8, 13] },
     splitMinValue: 4,         // hostile numbers this big may split in two when shot
     slowmo: { lastLifeSecs: 0.9, lastLifeScale: 0.35, deathScale: 0.4, deathSecs: 0.7 },
-    multFlash: [8, 16, 32, 64], // multiplier values that trigger the big flash
+    bigGainFactor: 2,         // a touch that multiplies your score by this much or more triggers the gold flash
 
     // --- Ranked mode (weekly season, same enemy sequence for everybody) ----------------
     // The board keeps ONE row per player name: your best score of the season.
@@ -278,7 +273,7 @@ const __mod_config = (() => {
       // Paste a Firebase Realtime Database URL here to turn on the shared WORLD
       // board, for example 'https://my-game-default-rtdb.firebaseio.com'
       // Leave it empty ('') for a this-device-only leaderboard.
-      onlineUrl: '',
+      onlineUrl: 'https://math-strike-33d02-default-rtdb.asia-southeast1.firebasedatabase.app',
     },
 
     // --- Misc -------------------------------------------------------------------
@@ -373,13 +368,13 @@ const __mod_stages = (() => {
   //
   // To add a stage or rebalance one, edit this table. No game logic changes.
   //
-  // Each `table` entry describes something that can spawn:
-  //   { kind: 'int',     sign: +1|-1, min, max, weight }   signed integer
-  //   { kind: 'mult',    values: [2,3,5],         weight } good multiplier
-  //   { kind: 'negmult', values: [2,3],           weight } bad  multiplier
-  //   { kind: 'zero',                             weight } bad  zero
-  //   { kind: 'div',     values: [2,3,4],         weight } bad  divisor
-  //   { kind: 'frac',    pairs: [[1,2],[3,4]],    weight } bad  fraction
+  // Each stage applies ITS OWN operation to your score (see mathRules.js).
+  // Each `table` entry describes an operand that can spawn:
+  //   { kind: 'int',  sign: +1|-1, min, max, weight }   random whole number, e.g. +7 or -4
+  //   { kind: 'int',  values: [2,3,5],         weight } explicit whole numbers (may be 0 or negative)
+  //   { kind: 'frac', pairs: [[1,2],[3,4]],    weight } fractions between 0 and 1
+  // Whether an operand is GOOD (raises your score), BAD (lowers it) or DEADLY is worked
+  // out by the stage operation, so the same table format works for every stage.
   //
   // shooterChance : chance a hostile integer carries a gun (fires -n bullets)
   // shooterVolley : bullets per shot (fan spread)
@@ -391,33 +386,35 @@ const __mod_stages = (() => {
     {
       id: 1,
       op: '+',
+      signsOnly: true,   // tokens show only + or −, every hit is a fixed amount
       name: 'ADDITION',
       hue: 200,
-      tagline: 'Collect the positives. Dodge the negatives.',
+      tagline: 'CATCH the + signs. AVOID the − signs.',
       spawnInterval: 0.62,
       fallSpeed: [70, 120],
       shooterChance: 0.12,
       shooterVolley: 1,
       obstacles: { interval: [9, 13], wallChance: 0 }, // seconds between rocks/walls, share that are walls
       table: [
-        { kind: 'int', sign: +1, min: 1, max: 9, weight: 5 },
-        { kind: 'int', sign: -1, min: 1, max: 9, weight: 3.5 },
+        { kind: 'int', values: [5], weight: 5 },     // shown as just "+": catch it
+        { kind: 'int', values: [-5], weight: 3.5 },  // shown as just "−": avoid it
       ],
     },
     {
       id: 2,
       op: '−',
+      signsOnly: true,
       name: 'SUBTRACTION',
       hue: 285,
-      tagline: 'Enemies fire − operators. Negatives drain you.',
+      tagline: 'CATCH the − signs (minus a minus is plus). AVOID the + signs.',
       spawnInterval: 0.56,
       fallSpeed: [75, 125],
       shooterChance: 0.55,
       shooterVolley: 3,
       obstacles: { interval: [8, 12], wallChance: 0.2 }, // seconds between rocks/walls, share that are walls
       table: [
-        { kind: 'int', sign: +1, min: 1, max: 6, weight: 3 },
-        { kind: 'int', sign: -1, min: 2, max: 9, weight: 4 },
+        { kind: 'int', values: [-5], weight: 3 },   // shown as just "−": S − (−5) = S + 5, catch it
+        { kind: 'int', values: [5], weight: 4 },    // shown as just "+": S − 5, avoid it
       ],
     },
     {
@@ -425,18 +422,18 @@ const __mod_stages = (() => {
       op: '×',
       name: 'MULTIPLICATION',
       hue: 40,
-      tagline: 'Grab ×2 ×3 ×5. Zeros and ×negatives hurt.',
+      tagline: 'S × x : bigger than 1 grows, fractions under 1 shrink. ×0 and ×negative = DEATH.',
       spawnInterval: 0.54,
       fallSpeed: [80, 135],
-      shooterChance: 0.15,
+      shooterChance: 0,
       shooterVolley: 1,
       obstacles: { interval: [7, 11], wallChance: 0.3 }, // seconds between rocks/walls, share that are walls
       table: [
-        { kind: 'int', sign: +1, min: 1, max: 9, weight: 3 },
-        { kind: 'int', sign: -1, min: 1, max: 9, weight: 1.2 },
-        { kind: 'mult', values: [2, 2, 3, 5], weight: 1.4 },
-        { kind: 'zero', weight: 1.6 },
-        { kind: 'negmult', values: [2, 3], weight: 1.1 },
+        { kind: 'int', values: [2, 2, 3], weight: 1.6 },                           // good
+        { kind: 'frac', pairs: [[5, 4], [3, 2], [7, 4], [5, 3]], weight: 1.2 },    // good: improper fraction (> 1)
+        { kind: 'frac', pairs: [[1, 2], [1, 3], [2, 3], [3, 4]], weight: 2.2 },    // bad: proper fraction (< 1) shrinks you
+        { kind: 'int', values: [0], weight: 0.8 },                                 // S × 0 = 0: death
+        { kind: 'int', values: [-2, -3], weight: 0.7 },                            // different signs: death
       ],
     },
     {
@@ -444,19 +441,18 @@ const __mod_stages = (() => {
       op: '÷',
       name: 'DIVISION & FRACTIONS',
       hue: 340,
-      tagline: 'Divisors and fractions shrink your score and your ship.',
+      tagline: 'S ÷ x : fractions under 1 RAISE you, anything over 1 shrinks you. ÷0 = −1 life.',
       spawnInterval: 0.52,
       fallSpeed: [85, 140],
-      shooterChance: 0.22,
+      shooterChance: 0,
       shooterVolley: 2,
       obstacles: { interval: [6.5, 10], wallChance: 0.35 }, // seconds between rocks/walls, share that are walls
       table: [
-        { kind: 'int', sign: +1, min: 1, max: 9, weight: 3 },
-        { kind: 'int', sign: -1, min: 1, max: 9, weight: 1.5 },
-        { kind: 'mult', values: [2, 3], weight: 0.8 },
-        { kind: 'div', values: [2, 3, 4], weight: 2 },
-        { kind: 'frac', pairs: [[1, 2], [1, 3], [2, 3], [3, 4]], weight: 1.6 },
-        { kind: 'zero', weight: 0.5 },
+        { kind: 'frac', pairs: [[1, 2], [1, 3], [1, 4], [2, 3]], weight: 2.6 },    // good: proper fraction, ÷(1/2) doubles you
+        { kind: 'int', values: [2, 3, 4], weight: 1.5 },                           // bad: shrinks you
+        { kind: 'frac', pairs: [[5, 4], [3, 2], [7, 3]], weight: 1.1 },            // bad: improper fraction (> 1) shrinks you
+        { kind: 'int', values: [0], weight: 0.8 },                                 // ÷0 is undefined: −1 life
+        { kind: 'int', values: [-2, -3], weight: 0.7 },                            // different signs: death
       ],
     },
   ];
@@ -850,7 +846,6 @@ const __mod_upgrades = (() => {
     cooldown: 1,    // multiplies the time between shots (lower = faster)
     loss: 1,        // multiplies every point you lose
     powerTime: 1,   // multiplies power-up duration
-    decay: 1,       // multiplies the seconds before the multiplier halves
     magnet: 0,      // passive pickup-pull radius, in pixels
     graze: 1,       // multiplies the CLOSE CALL reward
   });
@@ -860,7 +855,6 @@ const __mod_upgrades = (() => {
     { id: 'rate',   icon: '≫', name: 'RAPID FIRE',   desc: 'Shoot 18% faster.',                   max: 3, apply: (m) => { m.cooldown *= 0.82; } },
     { id: 'armor',  icon: '▣', name: 'THICK SKIN',   desc: 'Take 12% less score damage.',         max: 3, apply: (m) => { m.loss *= 0.88; } },
     { id: 'power',  icon: 'π', name: 'LONG POWER',   desc: 'Power-ups last 35% longer.',          max: 3, apply: (m) => { m.powerTime *= 1.35; } },
-    { id: 'hold',   icon: '×', name: 'MULT LOCK',    desc: 'Multiplier decays 50% slower.',       max: 2, apply: (m) => { m.decay *= 1.5; } },
     { id: 'magnet', icon: '◎', name: 'LUCKY MAGNET', desc: 'Pickups drift toward you.',           max: 3, apply: (m) => { m.magnet += 55; } },
     { id: 'graze',  icon: '⚡', name: 'DAREDEVIL',    desc: 'CLOSE CALL bonus is doubled.',        max: 2, apply: (m) => { m.graze *= 2; } },
     { id: 'bombs',  icon: '◉', name: 'BOMB CACHE',   desc: `Refill Prime Bombs to ${CONFIG.maxBombs}.`, max: 99, instant: 'bombs' },
@@ -903,20 +897,25 @@ const __mod_mathRules = (() => {
   // =============================================================================
   // mathRules.js  -  the Math Rules Manager.
   //
-  // This is the ONLY place that decides how a number/operator changes your
-  // running score. Your score IS your health: it hits 0 -> game over.
+  // This is the ONLY place that decides how a number changes your running score.
+  // Your score IS your health: it hits 0 (or below) -> game over.
   //
-  // Token kinds understood here (see entities.js / stages.js):
-  //   'int'       signed integer. +n is a pickup, -n is a hazard.
-  //   'subBullet' a subtraction operator fired by enemies: touching it does -n.
-  //   'mult'      xk  (k > 1)  good: raises your multiplier.
-  //   'negmult'   x(-k)        bad : costs a share of your score, resets multiplier.
-  //   'zero'      0            bad : flat penalty AND resets the multiplier.
-  //   'div'       /n           bad : score is divided (softened), ship shrinks.
-  //   'frac'      p/q  (<1)    bad : same as div with factor p/q.
+  // Each stage applies ITS OWN OPERATION to your score S with the number x you touch:
+  //
+  //   Addition       S + x   x > 0 raises S, x < 0 lowers S, 0 does nothing
+  //   Subtraction    S - x   x > 0 lowers S, x < 0 RAISES S (minus a minus), 0 nothing
+  //   Multiplication S x x   x > 1 raises S, a fraction 0<x<1 lowers S,
+  //                          x < 0 makes S negative (you die), x = 0 -> S = 0 (you die)
+  //   Division       S / x   x > 1 lowers S, a fraction 0<x<1 RAISES S (S / 1/2 = 2S),
+  //                          x < 0 makes S negative (you die), x = 0 is undefined: -1 life
+  //
+  // Token kinds understood here (see entities.js):
+  //   'int'       whole-number operand (any sign, including 0)
+  //   'frac'      positive fraction num/den (always between 0 and 1)
+  //   'subBullet' a "-n" operator fired by enemies/bosses: always S - n
   //
   // Every resolve* method returns a result object:
-  //   { delta, label, tone: 'good' | 'bad' | 'neutral', shrink? }
+  //   { delta, label, tone: 'good' | 'bad' | 'neutral', shrink?, lifeLoss?, lethal? }
   // so the Game can show floating text, play sounds and shake the screen.
   // =============================================================================
 
@@ -924,7 +923,6 @@ const __mod_mathRules = (() => {
   const { DEFAULT_MODS } = __mod_upgrades;
 
   const MINUS = '−';
-  const TIMES = '×';
 
   /** Trial-division primality test (inputs are tiny). Negative numbers use |n|. */
   function isPrime(n) {
@@ -936,17 +934,41 @@ const __mod_mathRules = (() => {
     return true;
   }
 
+  /** The plain math: what is S (op) x ? Division by zero returns S unchanged. */
+  function applyOp(op, s, x) {
+    switch (op) {
+      case '+': return s + x;
+      case '−': return s - x;
+      case '×': return s * x;
+      case '÷': return x === 0 ? s : s / x;
+      default: return s;
+    }
+  }
+
+  /**
+   * What touching operand x does under an operation:
+   *   'up' raises the score, 'down' lowers it, 'none' changes nothing,
+   *   'kill' ends the run (score becomes 0 or negative), 'life' costs a life (x / 0).
+   */
+  function operandEffect(op, x) {
+    switch (op) {
+      case '+': return x > 0 ? 'up' : x < 0 ? 'down' : 'none';
+      case '−': return x > 0 ? 'down' : x < 0 ? 'up' : 'none';
+      case '×': return x <= 0 ? 'kill' : x > 1 ? 'up' : x < 1 ? 'down' : 'none';
+      case '÷': return x === 0 ? 'life' : x < 0 ? 'kill' : x < 1 ? 'up' : x > 1 ? 'down' : 'none';
+      default: return 'none';
+    }
+  }
+
   class MathRules {
     /** @param {object} character an entry from CHARACTERS */
     constructor(character) {
       this.character = character;
       this.score = character.startScore;
-      this.multiplier = 1;
       this.stageOp = '+';
-      this.dangerScale = 1;   // grows every stage so late hazards bite harder
-      this.multTimer = 0;     // seconds since the multiplier was last refreshed
+      this.dangerScale = 1;   // grows every stage: only used for enemy "-n" bullets
       // Seconds remaining for each timed power-up.
-      this.fx = { abs: 0, pi: 0, sq: 0 };
+      this.fx = { abs: 0, pi: 0, sq: 0, slow: 0 };
       this.mods = DEFAULT_MODS(); // upgrade multipliers (shared with the Player by Game)
     }
 
@@ -955,12 +977,6 @@ const __mod_mathRules = (() => {
     get absActive() { return this.fx.abs > 0; }
     get magnetActive() { return this.fx.pi > 0; }
     get squareActive() { return this.fx.sq > 0; }
-
-    /** Multiplier actually used for gains. x^2 power-up squares it (min x2). */
-    get effectiveMultiplier() {
-      const m = this.squareActive ? Math.max(2, this.multiplier * this.multiplier) : this.multiplier;
-      return Math.min(m, CONFIG.maxEffectiveMultiplier);
-    }
 
     isDead() { return this.score <= 0; }
 
@@ -974,140 +990,100 @@ const __mod_mathRules = (() => {
 
     tick(dt) {
       for (const k of Object.keys(this.fx)) this.fx[k] = Math.max(0, this.fx[k] - dt);
-
-      // "Use it or lose it": a big multiplier halves every few seconds.
-      if (this.multiplier > 1) {
-        this.multTimer += dt;
-        if (this.multTimer >= CONFIG.multiplierDecaySecs * this.mods.decay) {
-          this.multTimer = 0;
-          this.multiplier = Math.max(1, Math.floor(this.multiplier / 2));
-        }
-      } else {
-        this.multTimer = 0;
-      }
     }
 
     activatePowerup(kind) {
       this.fx[kind] = CONFIG.powerupDuration[kind] * this.mods.powerTime;
     }
 
-    /** Flat score change that ignores multipliers and defense (stage bonuses). */
-    addScore(n) { this.score += n; }
+    /** Flat score change (stage bonuses, rewards). */
+    addScore(n) { this.score = Math.min(CONFIG.maxScore, this.score + n); }
 
     // ---- internal helpers -----------------------------------------------------
 
-    /** Apply a positive gain (scaled by the multiplier). */
-    _gain(base) {
-      const d = Math.max(1, Math.round(base * this.effectiveMultiplier));
-      this.score += d;
-      return d;
-    }
-
-    /** Apply a loss (scaled by pilot defense and stage danger). Returns a result object. */
-    _loss(raw, prefix = '', pct = 0) {
-      // `pct` adds a share of the CURRENT score on top of the flat amount, so the
-      // more you are carrying, the more a hit costs (score is health, after all).
-      const base = raw + Math.ceil(Math.max(0, this.score) * pct);
-      const d = Math.max(1, Math.round(base * this.character.lossScale * this.dangerScale * this.mods.loss));
-      this.score -= d;
-      return { delta: -d, label: `${prefix}${MINUS}${d}`, tone: 'bad' };
-    }
-
-    /**
-     * Incoming negative value of size n (negative integer or subtraction bullet).
-     * The Absolute Value Shield turns it into a positive bonus: |-n| = n.
-     */
+    /** Incoming enemy "-n" bullet. The Absolute Value Shield turns it into +n. */
     _negative(n) {
       if (this.absActive) {
-        const d = this._gain(n);
-        return { delta: d, label: `|${MINUS}${n}|=+${d}`, tone: 'good', absorbed: true };
+        this.addScore(n);
+        return { delta: n, label: `|${MINUS}${n}|=+${n}`, tone: 'good', absorbed: true };
       }
-      const res = this._loss(n, '', CONFIG.hazardPercent * Math.min(n, 9) / 9);
-      // Stage 4 flavour: negatives also eat into your multiplier.
-      if (this.stageOp === '÷') this.multiplier = Math.max(1, Math.floor(this.multiplier / 2));
-      return res;
+      // flat n, plus a small share of a big score so bullets still matter late on
+      const pct = CONFIG.hazardPercent * Math.min(n, 9) / 9;
+      const base = n + Math.ceil(Math.max(0, this.score) * pct);
+      const d = Math.max(1, Math.round(base * this.character.lossScale * this.dangerScale * this.mods.loss));
+      this.score -= d;
+      return { delta: -d, label: `${MINUS}${d}`, tone: 'bad' };
     }
 
     // ---- public rules ---------------------------------------------------------
 
-    /** The player touched (or was hit by) `token`. Mutates score/multiplier. */
+    /** The player touched `token`. Applies the stage operation to the score. */
     resolveTouch(token) {
-      switch (token.kind) {
-        case 'int': {
-          if (token.value > 0) {
-            const d = this._gain(token.value);
-            return { delta: d, label: `+${d}`, tone: 'good' };
-          }
-          if (token.value === 0) return this.resolveTouch({ kind: 'zero' });
-          return this._negative(Math.abs(token.value));
-        }
+      if (token.kind === 'subBullet') return this._negative(token.value);
 
-        case 'subBullet':
-          return this._negative(token.value);
+      const op = token.op || this.stageOp;
+      let x = token.kind === 'frac' ? token.num / token.den : token.value;
+      const S = this.score;
 
-        case 'mult': {
-          this.multTimer = 0; // refreshing keeps the decay clock from ticking
-          this.multiplier = Math.min(CONFIG.maxMultiplier, this.multiplier * token.value);
-          return { delta: 0, label: `MULT ${TIMES}${this.multiplier}`, tone: 'good' };
-        }
-
-        case 'negmult': {
-          const k = token.value;
-          if (this.absActive) {
-            // |x(-k)| = xk : the shield converts the hazard into a real multiplier
-            this.multiplier = Math.min(CONFIG.maxMultiplier, this.multiplier * k);
-            return { delta: 0, label: `|${TIMES}${MINUS}${k}|=${TIMES}${k}`, tone: 'good', absorbed: true };
-          }
-          // Multiplying a positive score by a negative flips its sign. A full flip
-          // would be an instant game over, so we charge a capped share instead.
-          const share = Math.floor(this.score * CONFIG.negMultRate * k);
-          const cap = Math.floor(this.score * CONFIG.negMultMaxFraction);
-          this.multiplier = 1;
-          return this._loss(Math.max(10, Math.min(share, cap)), `${TIMES}${MINUS}${k} `);
-        }
-
-        case 'zero': {
-          if (this.absActive) {
-            // |0| = 0 ... the shield simply neutralises it.
-            return { delta: 0, label: 'NULLIFIED', tone: 'neutral', absorbed: true };
-          }
-          this.multiplier = 1;
-          return this._loss(CONFIG.zeroPenalty, '0 ', CONFIG.zeroPercent);
-        }
-
-        case 'div':
-        case 'frac': {
-          // factor f in (0,1). Real division would halve your score at /2, which is
-          // brutal, so the loss is softened by CONFIG.divSeverity. NOTE: the shield
-          // does NOT help here, because these are not negative numbers.
-          const f = token.kind === 'div' ? 1 / token.value : token.num / token.den;
-          const raw = Math.max(1, Math.floor(this.score * (1 - f) * CONFIG.divSeverity));
-          this.multiplier = Math.max(1, Math.floor(this.multiplier * f));
-          const res = this._loss(raw, `${token.label} `);
-          res.shrink = f; // Game shrinks the ship (weaker shots) by this factor
-          return res;
-        }
-
-        default:
-          return { delta: 0, label: '', tone: 'neutral' };
+      // |x| Absolute Value Shield: use |x| when that is better for you; 0 is nullified.
+      if (this.absActive) {
+        if (x === 0) return { delta: 0, label: 'NULLIFIED', tone: 'neutral', absorbed: true };
+        if (applyOp(op, S, Math.abs(x)) > applyOp(op, S, x)) x = Math.abs(x);
       }
+
+      let eff = operandEffect(op, x);
+
+      // x^2 power-up: a GOOD number is squared (keeping its sign), so it does more.
+      if (this.squareActive && eff === 'up') x = Math.sign(x) * x * x;
+
+      if (eff === 'life') {
+        return { delta: 0, label: `${token.label}  ERROR`, tone: 'bad', lifeLoss: true };
+      }
+
+      let result;
+      if (eff === 'kill') {
+        result = Math.min(0, Math.round(S * x));      // 0 or negative: the run ends
+      } else if (eff === 'none') {
+        result = S;
+      } else {
+        result = Math.round(applyOp(op, S, x));
+        if (eff === 'up') {
+          result = Math.max(S + 1, result);
+          // x and / stages: one catch can add at most 25% (min +10, max +150) so scores cannot snowball
+          if (op === '×' || op === '÷') result = Math.min(result, S + Math.min(CONFIG.gainCapMax, Math.max(CONFIG.gainCapMin, Math.round(S * CONFIG.gainCapPct))));
+        }
+        else {
+          // a pilot's defense softens every ordinary loss (never a kill)
+          const loss = Math.max(1, S - Math.max(1, result));
+          result = S - Math.max(1, Math.round(loss * this.character.lossScale * this.mods.loss));
+        }
+      }
+      result = Math.min(CONFIG.maxScore, result);
+      this.score = result;
+      const delta = result - S;
+
+      if (eff === 'kill') {
+        return { delta, label: `${token.label}  DELETED`, tone: 'bad', lethal: true };
+      }
+      const res = {
+        delta,
+        label: delta === 0 ? 'NO CHANGE' : `${token.label}  ${delta > 0 ? '+' : MINUS}${Math.abs(delta)}`,
+        tone: delta > 0 ? 'good' : delta < 0 ? 'bad' : 'neutral',
+        factor: S > 0 ? result / S : 1,
+      };
+      // Stage 3 and 4: a hit that shrinks your score also shrinks your ship (weaker shots).
+      if ((op === '×' || op === '÷') && eff === 'down') res.shrink = Math.max(0.01, result / S);
+      return res;
     }
 
-    /** The player shot (or bombed) a hostile token: pay out a kill reward. */
+    /** The player shot (or bombed) a hostile token: pay out a flat kill reward. */
     resolveKill(token) {
-      let base;
-      switch (token.kind) {
-        case 'int': base = Math.ceil(Math.abs(token.value) / 2) + 1; break;
-        case 'zero': base = 3; break;
-        default: base = 5; // negmult, div, frac
-      }
-      // Kill rewards are flat on purpose: only PICKUPS use the multiplier, so
-      // standing still and farming kills cannot snowball.
-      this.score += base;
+      const base = token.kind === 'int' ? Math.ceil(Math.abs(token.value) / 2) + 1 : 5;
+      this.addScore(base);
       return { delta: base, label: `+${base}`, tone: 'good' };
     }
   }
-  return { isPrime, MathRules };
+  return { isPrime, applyOp, operandEffect, MathRules };
 })();
 
 /* ======================= FILE: entities.js ======================= */
@@ -1127,6 +1103,7 @@ const __mod_entities = (() => {
 
   const { CONFIG } = __mod_config;
   const { drawText, drawShip, drawHeart, pathRoundRect } = __mod_draw;
+  const { operandEffect } = __mod_mathRules;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -1237,40 +1214,18 @@ const __mod_entities = (() => {
       this.spared = 0;
       this.dead = false;
 
-      switch (this.kind) {
-        case 'int':
-          this.role = this.value > 0 ? 'good' : 'bad';
-          this.label = this.value > 0 ? `+${this.value}` : `${MINUS}${Math.abs(this.value)}`;
-          break;
-        case 'mult':
-          this.role = 'good';
-          this.label = `${TIMES}${this.value}`;
-          break;
-        case 'negmult':
-          this.role = 'bad';
-          this.label = `${TIMES}${MINUS}${this.value}`;
-          break;
-        case 'zero':
-          this.role = 'bad';
-          this.label = '0';
-          break;
-        case 'div':
-          this.role = 'bad';
-          this.label = `${DIVIDE}${this.value}`;
-          break;
-        case 'frac':
-          this.role = 'bad';
-          this.label = `${this.num}/${this.den}`;
-          break;
-        default:
-          throw new Error(`Unknown token kind: ${this.kind}`);
-      }
+      // Every token is an OPERAND for its stage's operation (+, −, ×, ÷).
+      // Good = the operation RAISES your score. Everything else is an enemy.
+      this.op = spec.op || '+';
+      const x = this.kind === 'frac' ? this.num / this.den : this.value;
+      if (this.kind !== 'int' && this.kind !== 'frac') throw new Error(`Unknown token kind: ${this.kind}`);
+      this.effect = operandEffect(this.op, x);   // 'up' | 'down' | 'none' | 'kill' | 'life'
+      this.role = this.effect === 'up' ? 'good' : 'bad';
+      const operand = this.kind === 'frac' ? `${this.num}/${this.den}` : x < 0 ? `(${MINUS}${Math.abs(x)})` : String(x);
+      this.label = `${this.op}${operand}`;
+      // Addition / Subtraction tokens are drawn as just their sign (+ or −)
+      this.signOnly = this.kind === 'int' && x !== 0 && (this.op === '+' || this.op === MINUS);
       this.radius = 18;
-    }
-
-    /** Multiplicative factor for div/frac tokens (used by the ship shrink). */
-    get factor() {
-      return this.kind === 'div' ? 1 / this.value : this.num / this.den;
     }
 
     update(dt) {
@@ -1340,6 +1295,17 @@ const __mod_entities = (() => {
       ctx.stroke();
       ctx.shadowBlur = 0;
 
+      // Deadly operands (kill / lose a life) get a double outline
+      if (!good && (this.effect === 'kill' || this.effect === 'life')) {
+        const r2 = this.radius * 1.3 + 6;
+        ctx.strokeStyle = this.effect === 'kill' ? '#ffffff' : COLORS.hazard;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, -r2); ctx.lineTo(r2, 0); ctx.lineTo(0, r2); ctx.lineTo(-r2, 0);
+        ctx.closePath();
+        ctx.stroke();
+      }
+
       // Splitters have a seam: they break in two when shot
       if (this.splits && !good) {
         const r = this.radius * 1.3;
@@ -1361,7 +1327,19 @@ const __mod_entities = (() => {
         ctx.stroke();
       }
 
-      drawText(ctx, this.label, 0, 1, { size: this.label.length > 2 ? 15 : 19, color });
+      if (this.signOnly) {
+        drawText(ctx, this.value > 0 ? '+' : MINUS, 0, 1, { size: 34, color });
+      } else if (this.kind === 'frac') {
+        // stacked fraction: op sign, then numerator over denominator
+        drawText(ctx, this.op, -13, 1, { size: 14, color });
+        drawText(ctx, String(this.num), 6, -7, { size: 14, color });
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.moveTo(-3, 1); ctx.lineTo(15, 1); ctx.stroke();
+        drawText(ctx, String(this.den), 6, 10, { size: 14, color });
+      } else {
+        drawText(ctx, this.label, 0, 1, { size: this.label.length > 2 ? 15 : 19, color });
+      }
 
       // HP pips for enemies that take more than one hit
       if (!good && this.hp > 1) {
@@ -1380,6 +1358,7 @@ const __mod_entities = (() => {
     abs: { glyph: '|x|', color: '#7df9ff', name: 'ABSOLUTE SHIELD' },
     pi: { glyph: 'π', color: '#ffd75e', name: 'PI MAGNET' },
     sq: { glyph: 'x²', color: '#c79bff', name: 'EXPONENT' },
+    slow: { glyph: 'Δt', color: '#8fb3ff', name: 'SLOW TIME' },
     life: { glyph: '♥', color: '#ff5d8f', name: 'EXTRA LIFE' }, // instant, not timed
   };
 
@@ -1820,6 +1799,7 @@ const __mod_spawner = (() => {
 
   const { CONFIG } = __mod_config;
   const { Token, PowerUp, Obstacle, Gate } = __mod_entities;
+  const { operandEffect } = __mod_mathRules;
   const { makeGate } = __mod_gate;
 
   const W = CONFIG.width;
@@ -1882,7 +1862,7 @@ const __mod_spawner = (() => {
       this.powerTimer -= dt;
       if (this.powerTimer <= 0) {
         this.powerTimer = this._nextPowerTime();
-        const kinds = ['abs', 'pi', 'sq'];
+        const kinds = ['abs', 'pi', 'sq', 'slow'];
         const kind = kinds[Math.floor(this.rng() * kinds.length)];
         powerups.push(new PowerUp(kind, 40 + this.rng() * (W - 80)));
       }
@@ -1945,30 +1925,38 @@ const __mod_spawner = (() => {
       const speedUp = 0.9 + 0.1 * ctx.difficulty;
       const kind = this._choice(stage.id >= 2 ? ['vee', 'row', 'ring'] : ['vee', 'row']);
 
+      const tok = (operand, extra) => new Token({ ...operand, op: stage.op, ...extra });
+      // Small enemy numbers of this stage: they lower your score but never kill you outright.
+      const smallBad = () => {
+        const o = this._operandOf(stage, 'down');
+        if (o.kind === 'int' && Math.abs(o.value) > 4) o.value = Math.sign(o.value) * (2 + Math.floor(this.rng() * 3));
+        return o;
+      };
+
       if (kind === 'vee') {
-        // five small negatives in a V, tip first
+        // five small enemies in a V, tip first
         const cx = r(120, W - 120);
         for (let i = -2; i <= 2; i++) {
-          tokens.push(new Token({ kind: 'int', value: -ri(2, 4), x: cx + i * 52, y: -30 - Math.abs(i) * 34, vy: 105 * speedUp, hp: 1 }));
+          tokens.push(tok(smallBad(), { x: cx + i * 52, y: -30 - Math.abs(i) * 34, vy: 105 * speedUp, hp: 1 }));
         }
       } else if (kind === 'row') {
-        // a row of pickups with one bomb hidden among them
+        // a row of pickups with one enemy hidden among them
         const bad = ri(0, 4);
         for (let i = 0; i < 5; i++) {
-          const value = i === bad ? -ri(3, 6) : ri(2, 8);
-          tokens.push(new Token({ kind: 'int', value, x: 60 + i * 90, y: -30, vy: 88 * speedUp, hp: 1 }));
+          const o = i === bad ? smallBad() : this._operandOf(stage, 'up');
+          tokens.push(tok(o, { x: 60 + i * 90, y: -30, vy: 88 * speedUp, hp: 1 }));
         }
       } else {
-        // risk and reward: a juicy +9 guarded by six orbiting negatives
+        // risk and reward: a juicy pickup guarded by six orbiting enemies
         const cx = r(140, W - 140);
         const vy = 64 * speedUp;
-        tokens.push(new Token({ kind: 'int', value: 9, x: cx, y: -60, vy }));
+        tokens.push(tok(this._operandOf(stage, 'up'), { x: cx, y: -60, vy }));
         const w = (this.rng() < 0.5 ? -1 : 1) * 1.7;
         for (let i = 0; i < 6; i++) {
           const ang = (i / 6) * TAU;
           const orbit = { cx, cy: -60, R: 66, ang, w };
-          tokens.push(new Token({
-            kind: 'int', value: -ri(2, 3), pattern: 'orbit', orbit, vy, hp: 1,
+          tokens.push(tok(smallBad(), {
+            pattern: 'orbit', orbit, vy, hp: 1,
             x: cx + Math.cos(ang) * 66, y: -60 + Math.sin(ang) * 66,
           }));
         }
@@ -2009,47 +1997,52 @@ const __mod_spawner = (() => {
       return list[Math.floor(this.rng() * list.length)];
     }
 
-    _makeToken(entry, stage, difficulty, playerX) {
+    /** Pick a table entry's operand: { kind, value, num, den }. */
+    _operand(entry) {
       const r = (a, b) => a + (b - a) * this.rng();
       const ri = (a, b) => Math.floor(r(a, b + 1));
+      if (entry.kind === 'frac') {
+        const [num, den] = this._choice(entry.pairs);
+        return { kind: 'frac', num, den };
+      }
+      return { kind: 'int', value: entry.values ? this._choice(entry.values) : entry.sign * ri(entry.min, entry.max) };
+    }
+
+    /** The table entries of a stage that are GOOD ('up') or plain BAD ('down'), never deadly. */
+    _entriesOf(stage, effect) {
+      return stage.table.filter((e) => {
+        const x = e.kind === 'frac' ? e.pairs[0][0] / e.pairs[0][1] : e.values ? e.values[0] : e.sign * e.min;
+        return operandEffect(stage.op, x) === effect;
+      });
+    }
+
+    /** A random operand of a given effect for this stage (used by formations). */
+    _operandOf(stage, effect) {
+      const list = this._entriesOf(stage, effect);
+      return this._operand(this._pick(list.length ? list : stage.table));
+    }
+
+    _makeToken(entry, stage, difficulty, playerX) {
+      const r = (a, b) => a + (b - a) * this.rng();
+      const additive = stage.op === '+' || stage.op === '−';
 
       const spec = {
-        kind: entry.kind,
+        ...this._operand(entry),
+        op: stage.op,
         x: r(36, W - 36),
         y: -30,
         vy: r(stage.fallSpeed[0], stage.fallSpeed[1]) * (0.9 + 0.1 * difficulty),
         hp: 1,
       };
+      const x = spec.kind === 'frac' ? spec.num / spec.den : spec.value;
+      const effect = operandEffect(stage.op, x);
+      const hostile = effect !== 'up';
 
-      // What number/operator is it? Hostile ones take more hits to destroy.
-      switch (entry.kind) {
-        case 'int':
-          spec.value = entry.sign * ri(entry.min, entry.max);
-          if (spec.value < 0) spec.hp = 1 + Math.floor(-spec.value / 4); // 1..3
-          break;
-        case 'mult':
-          spec.value = this._choice(entry.values);
-          break;
-        case 'negmult':
-        case 'div':
-          spec.value = this._choice(entry.values);
-          spec.hp = 2;
-          break;
-        case 'frac': {
-          const [num, den] = this._choice(entry.pairs);
-          spec.num = num;
-          spec.den = den;
-          spec.hp = 2;
-          break;
-        }
-        case 'zero':
-          spec.hp = 2;
-          break;
-      }
+      // Hostile numbers take more hits to destroy (bigger / deadlier = tougher).
+      if (hostile) spec.hp = additive ? 1 + Math.floor(Math.abs(x) / 4) : 2;
 
       // Hostile numbers sometimes spawn right above the player, so parking in one
       // spot is not a winning strategy.
-      const hostile = (entry.kind === 'int' && spec.value < 0) || ['zero', 'negmult', 'div', 'frac'].includes(entry.kind);
       const aimed = hostile && playerX !== undefined && this.rng() < CONFIG.aimedSpawnChance;
       if (aimed) spec.x = Math.max(36, Math.min(W - 36, playerX + r(-40, 40)));
 
@@ -2068,13 +2061,13 @@ const __mod_spawner = (() => {
         spec.zdir = this.rng() < 0.5 ? 1 : -1;
       }
 
-      // Some hostile integers carry a gun and fire "-n" subtraction bullets.
-      if (entry.kind === 'int' && spec.value < 0 && this.rng() < stage.shooterChance * difficulty) {
+      // Some hostile numbers in Addition/Subtraction carry a gun and fire "-n" bullets.
+      if (additive && effect === 'down' && this.rng() < stage.shooterChance * difficulty) {
         spec.shooter = { interval: r(1.3, 2.1) / Math.sqrt(difficulty), volley: stage.shooterVolley };
         spec.vy *= 0.65;           // shooters linger so you can see them
         spec.pattern = 'straight';
-      } else if (entry.kind === 'int' && spec.value <= -CONFIG.splitMinValue && stage.id >= 2 && this.rng() < 0.3) {
-        spec.splits = true;        // breaks into two smaller negatives when destroyed
+      } else if (additive && effect === 'down' && Math.abs(x) >= CONFIG.splitMinValue && stage.id >= 2 && !stage.signsOnly && this.rng() < 0.3) {
+        spec.splits = true;        // breaks into two smaller numbers when destroyed
       }
 
       return new Token(spec);
@@ -2786,15 +2779,13 @@ const __mod_ui = (() => {
       drawHeart(ctx, W / 2 + 10 + (i - (CONFIG.maxLives - 1) / 2) * 26, 41, 6.5, COLORS.heart, i < game.lives);
     }
 
-    const m = r.effectiveMultiplier;
-    drawText(ctx, 'MULT', W - 14, 13, { size: 10, align: 'right', color: '#8fb3d9' });
-    drawText(ctx, `×${m}`, W - 14, 37, {
-      size: 26 + Math.round(8 * Math.min(1, game.multPulse)), align: 'right',
-      color: m > 1 ? COLORS.gold : '#5b7497', glow: m > 1 ? 10 + 14 * Math.min(1, game.multPulse) : 0,
+    // The rule of this stage: S (operation) x
+    drawText(ctx, 'RULE', W - 14, 13, { size: 10, align: 'right', color: '#8fb3d9' });
+    drawText(ctx, `S ${stage.op} x`, W - 14, 37, {
+      size: 24 + Math.round(8 * Math.min(1, game.multPulse)), align: 'right',
+      color: COLORS.gold, glow: 10 + 14 * Math.min(1, game.multPulse),
     });
-    if (r.squareActive) {
-      drawText(ctx, `(${r.multiplier}²)`, W - 80, 37, { size: 12, align: 'right', color: POWERUP_INFO.sq.color });
-    }
+    if (r.squareActive) drawText(ctx, 'x²', W - 100, 37, { size: 13, align: 'right', color: POWERUP_INFO.sq.color });
 
     // Health bar: green when comfortable, red when close to zero
     const ratio = clamp(r.score / (r.character.startScore * 1.5), 0, 1);
@@ -2837,7 +2828,7 @@ const __mod_ui = (() => {
 
     // Bottom-right: active power-up timers
     let y = H - 16;
-    for (const kind of ['abs', 'pi', 'sq']) {
+    for (const kind of ['abs', 'pi', 'sq', 'slow']) {
       const left = r.fx[kind];
       if (left <= 0) continue;
       const info = POWERUP_INFO[kind];
@@ -3483,7 +3474,7 @@ const __mod_game = (() => {
       this.bullets = this.bullets.filter((b) => b.owner === 'player'); // wipe hostile fire
       this.stageIndex++;
       this.stageTime = 0;
-      this.difficulty = 1 + 0.3 * Math.floor(this.stageIndex / STAGES.length); // endless loops get harder
+      this.difficulty = 1 + CONFIG.loopDifficultyStep * Math.floor(this.stageIndex / STAGES.length); // endless loops get harder
       this.rules.setStage(this.stage, this.stageIndex);
       this.spawner.onStageStart();
       this.banner = { t: 0, dur: 2.8 };
@@ -3529,6 +3520,8 @@ const __mod_game = (() => {
         dt *= this.slowmo.scale;
         if (this.slowmo.t <= 0) this.slowmo = { t: 0, scale: 1 };
       }
+      // SLOW TIME power-up: everything (enemies, bullets, the stage clock) runs slower
+      if (this.state === 'playing' && this.rules?.fx?.slow > 0) dt *= CONFIG.slowFactor;
       this.time += dt;
       this.stateTime += dt;
       if (this.input.wasPressed('mute')) this.sfx.toggleMute();
@@ -3786,7 +3779,7 @@ const __mod_game = (() => {
           }
         } else if (act.type === 'summon') {
           for (let i = 0; i < act.n; i++) {
-            this.tokens.push(new Token({ kind: 'zero', x: boss.x + (i - (act.n - 1) / 2) * 56, y: boss.y + 30, vy: 115, hp: 2 }));
+            this.tokens.push(new Token({ kind: 'int', value: 0, op: this.stage.op, x: boss.x + (i - (act.n - 1) / 2) * 56, y: boss.y + 30, vy: 115, hp: 2 }));
           }
         }
       }
@@ -3931,9 +3924,9 @@ const __mod_game = (() => {
         const r = t.role === 'good' ? p.collectRadius : p.hitRadius;
         if (hits(p.x, p.y, r, t.x, t.y, t.radius)) {
           t.dead = true;
-          const before = this.rules.effectiveMultiplier;
+          const before = this.rules.score;
           this.applyResult(this.rules.resolveTouch(t), t.x, t.y, t);
-          this.checkMultFlash(before);
+          this.checkBigGain(before);
         }
       }
 
@@ -4029,10 +4022,7 @@ const __mod_game = (() => {
         g.resolved = 'right';
         const reward = Math.round(CONFIG.gates.reward * (1 + 0.25 * this.stageIndex));
         this.rules.addScore(reward);
-        const before = this.rules.effectiveMultiplier;
-        this.rules.multiplier = Math.min(CONFIG.maxMultiplier, Math.max(2, this.rules.multiplier * 2));
-        this.rules.multTimer = 0;
-        const kinds = ['abs', 'pi', 'sq'];
+        const kinds = ['abs', 'pi', 'sq', 'slow'];
         const kind = kinds[Math.floor(this.runRng() * kinds.length)];
         this.rules.activatePowerup(kind);
         this.addText(g.x, g.y - 30, `${g.text} = ${g.value}  CORRECT!  +${reward}`, COLORS.good, 18);
@@ -4041,7 +4031,6 @@ const __mod_game = (() => {
         this.flash = { color: 'rgba(93,255,176,0.3)', t: 0.25 };
         this.sfx.play('gate');
         this.chain();
-        this.checkMultFlash(before);
       } else {
         g.resolved = 'wrong';
         this.addText(g.x, g.y - 30, `${g.text} = ${g.value}  WRONG`, COLORS.bad, 18);
@@ -4050,17 +4039,16 @@ const __mod_game = (() => {
       }
     }
 
-    /** Big gold flash when the multiplier first reaches 8, 16, 32 or 64. */
-    checkMultFlash(before) {
-      const now = this.rules.effectiveMultiplier;
-      for (const m of CONFIG.multFlash) {
-        if (before < m && now >= m) {
-          this.flash = { color: 'rgba(255,215,94,0.5)', t: 0.4 };
-          this.addText(W / 2, H / 2 - 20, `×${m}!`, COLORS.gold, 60);
-          this.explode(this.player.x, this.player.y, COLORS.gold, 2.5);
-          this.multPulse = 1.2;
-          this.sfx.play('mult');
-        }
+    /** Big gold flash when one touch multiplies your score by 2 or more (a lucky ×3 or ÷½). */
+    checkBigGain(before) {
+      const now = this.rules.score;
+      if (before > 0 && now >= before * CONFIG.bigGainFactor && now - before >= 20) {
+        const f = now / before;
+        this.flash = { color: 'rgba(255,215,94,0.5)', t: 0.4 };
+        this.addText(W / 2, H / 2 - 20, `×${f >= 10 ? Math.round(f) : f.toFixed(1).replace(/\.0$/, '')}!`, COLORS.gold, 60);
+        this.explode(this.player.x, this.player.y, COLORS.gold, 2.5);
+        this.multPulse = 1.2;
+        this.sfx.play('mult');
       }
     }
 
@@ -4112,6 +4100,12 @@ const __mod_game = (() => {
       const color = res.tone === 'good' ? COLORS.good : res.tone === 'bad' ? COLORS.bad : '#c8d6ee';
       if (res.label) this.addText(x, y - 12, res.label, color, res.delta < 0 ? 20 : 17);
 
+      if (res.lifeLoss) {
+        if (this.invuln <= 0) this.loseLife(null, '÷0 ERROR');
+        this.sfx.play('wrong');
+        return;
+      }
+      if (res.lethal) { this.shake = 0.8; this.flash = { color: 'rgba(255,255,255,0.6)', t: 0.3 }; }
       if (res.tone === 'bad') {
         this.shake = Math.max(this.shake, 0.35);
         this.flash = { color: 'rgba(255,40,80,0.35)', t: 0.18 };
@@ -4141,7 +4135,7 @@ const __mod_game = (() => {
         const parts = [a, total - a];
         parts.forEach((n, i) => {
           this.tokens.push(new Token({
-            kind: 'int', value: -n, x: token.x + (i ? 16 : -16), y: token.y, vy: 100, hp: 1,
+            kind: 'int', op: token.op, value: Math.sign(token.value || -1) * n, x: token.x + (i ? 16 : -16), y: token.y, vy: 100, hp: 1,
             pattern: 'drift', vx: i ? 80 : -80,
           }));
         });
@@ -4179,7 +4173,7 @@ const __mod_game = (() => {
       let sparedAny = false;
       for (const t of this.tokens) {
         if (t.dead || t.role !== 'bad') continue;
-        if (t.kind === 'int' && isPrime(t.value)) {
+        if (t.kind === 'int' && !t.signOnly && isPrime(t.value)) {
           t.spared = 1.5;
           sparedAny = true;
         } else {
@@ -4365,6 +4359,14 @@ const __mod_game = (() => {
         ctx.arc(p.x, p.y, CONFIG.piMagnet.radius, 0, Math.PI * 2);
         ctx.stroke();
         drawText(ctx, 'π', p.x + 30, p.y - 26, { size: 16, color: POWERUP_INFO.pi.color, glow: 8 });
+      }
+      if (fx.slow > 0) {
+        ctx.strokeStyle = 'rgba(143,179,255,0.35)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 48 + 3 * Math.sin(this.time * 5), 0, Math.PI * 2);
+        ctx.stroke();
+        drawText(ctx, 'Δt', p.x + 34, p.y + 34, { size: 14, color: POWERUP_INFO.slow.color, glow: 8 });
       }
       if (fx.sq > 0) {
         ctx.fillStyle = `rgba(199,155,255,${0.12 + 0.06 * Math.sin(this.time * 8)})`;
