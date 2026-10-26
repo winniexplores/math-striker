@@ -124,6 +124,10 @@ input { -webkit-user-select: text; user-select: text; } /* body blocks selection
   outline: none;
 }
 .card input:focus { border-color: #ffd75e; }
+.card input + input { margin-top: 12px; }
+.card p.error { color: #ff4d6d; font-size: 14px; margin: 10px 0 0; }
+.card p.error[hidden] { display: none; }
+.card p.small { font-size: 12px; color: #8fb3d9; margin: 14px 0 0; }
 
   </style>
 </head>
@@ -158,6 +162,20 @@ input { -webkit-user-select: text; user-select: text; } /* body blocks selection
       <input id="name-input" type="text" maxlength="12" placeholder="YOUR NAME" autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="done">
       <button class="btn primary" type="submit">SAVE SCORE</button>
       <button id="name-skip" class="btn ghost" type="button">SKIP</button>
+    </form>
+  </section>
+
+  <!-- Shown once: register with a name and a mobile number (also used by SWITCH PLAYER) -->
+  <section id="register" class="overlay" hidden>
+    <form id="reg-form" class="card" autocomplete="off">
+      <h2 id="reg-title">REGISTER TO PLAY</h2>
+      <p id="reg-intro">Your name and mobile number keep every score under your own profile.</p>
+      <input id="reg-name" type="text" maxlength="12" placeholder="YOUR NAME" autocomplete="off" autocapitalize="words" spellcheck="false" enterkeyhint="next">
+      <input id="reg-phone" type="tel" inputmode="numeric" maxlength="16" placeholder="09171234567" autocomplete="off" enterkeyhint="done">
+      <p id="reg-error" class="error" hidden></p>
+      <button id="reg-go" class="btn primary" type="submit">START PLAYING</button>
+      <button id="reg-cancel" class="btn ghost" type="button" hidden>CANCEL</button>
+      <p class="small">Your number is only used to tell players apart. It is never shown to anyone, and the game does not keep it on your phone.</p>
     </form>
   </section>
 
@@ -207,7 +225,8 @@ const __mod_config = (() => {
     bombSparesPrimeBullets: false,
 
     // --- Power-ups --------------------------------------------------------------
-    powerupDuration: { abs: 8, pi: 8, sq: 8, slow: 6 }, // seconds (slow-time counts game seconds)
+    powerupDuration: { abs: 8, pi: 8, sq: 8, slow: 6, guard: 15, double: 8, freeze: 3.5 }, // seconds (slow-time counts game seconds)
+    guardCharges: 3,          // GUARD power-up: how many hits it blocks
     slowFactor: 0.55,         // SLOW TIME power-up: the whole game runs at this speed
     loopDifficultyStep: 0.18, // each full loop of 4 stages adds this much difficulty
     powerupInterval: [14, 22],                 // random gap between power-up drops
@@ -288,7 +307,8 @@ const __mod_config = (() => {
   // -----------------------------------------------------------------------------
   // Playable pilots.
   //   startScore  : your running score IS your health, so this is starting HP
-  //   lossScale   : multiplies every point you lose (0.7 = take 30% less damage)
+  //   lossScale   : multiplies every point you lose (0.7 = take 30% less damage, 1.35 = take 35% more)
+  //   counter     : { mult, secs } after losing score or a life, shots do `mult` damage for `secs`
   //   weapon      : 'single' | 'burst' (see Player.tryFire in entities.js)
   // -----------------------------------------------------------------------------
   const CHARACTERS = [
@@ -297,14 +317,15 @@ const __mod_config = (() => {
       name: 'AXIOM',
       role: 'Male Pilot',
       color: '#4dd2ff',
-      blurb: ['Steady and reliable.', 'Takes 35% less damage', 'and starts with a', 'bigger score buffer.'],
-      stats: { Defense: 5, Mobility: 2, Burst: 2 },
+      blurb: ['Tough and steady.', 'Takes 25% less damage.', 'COUNTER: after a hit,', 'shots hit 60% harder.'],
+      stats: { Defense: 4, Mobility: 3, Burst: 3 },
       startScore: 150,
-      lossScale: 0.65,
-      speed: 280,
+      lossScale: 0.75,
+      speed: 300,
       fireCooldown: 0.16,
-      damage: 1,
+      damage: 1.4,
       weapon: 'single',
+      counter: { mult: 1.6, secs: 4 }, // after losing score or a life: shots hit harder for a while
       bombs: 3,
     },
     {
@@ -312,11 +333,11 @@ const __mod_config = (() => {
       name: 'CALCULA',
       role: 'Female Pilot',
       color: '#ff6bd6',
-      blurb: ['Fast and fierce.', 'Twin shots plus a', '5-way burst with 2x', 'damage every 6th volley.'],
-      stats: { Defense: 2, Mobility: 5, Burst: 5 },
+      blurb: ['Fast and fierce.', 'Twin shots + 5-way burst.', 'Glass cannon: takes', '35% more damage.'],
+      stats: { Defense: 1, Mobility: 5, Burst: 5 },
       startScore: 100,
-      lossScale: 1.0,
-      speed: 340,
+      lossScale: 1.35,
+      speed: 330,
       fireCooldown: 0.15,
       damage: 1,
       weapon: 'burst',
@@ -972,7 +993,8 @@ const __mod_mathRules = (() => {
       this.stageOp = '+';
       this.dangerScale = 1;   // grows every stage: only used for enemy "-n" bullets
       // Seconds remaining for each timed power-up.
-      this.fx = { abs: 0, pi: 0, sq: 0, slow: 0 };
+      this.fx = { abs: 0, pi: 0, sq: 0, slow: 0, guard: 0, double: 0, freeze: 0 };
+      this.guardCharges = 0;  // GUARD blocks this many more hits
       this.mods = DEFAULT_MODS(); // upgrade multipliers (shared with the Player by Game)
     }
 
@@ -981,6 +1003,9 @@ const __mod_mathRules = (() => {
     get absActive() { return this.fx.abs > 0; }
     get magnetActive() { return this.fx.pi > 0; }
     get squareActive() { return this.fx.sq > 0; }
+    get guardActive() { return this.fx.guard > 0 && this.guardCharges > 0; }
+    get doubleActive() { return this.fx.double > 0; }
+    get freezeActive() { return this.fx.freeze > 0; }
 
     isDead() { return this.score <= 0; }
 
@@ -998,10 +1023,22 @@ const __mod_mathRules = (() => {
 
     activatePowerup(kind) {
       this.fx[kind] = CONFIG.powerupDuration[kind] * this.mods.powerTime;
+      if (kind === 'guard') this.guardCharges = CONFIG.guardCharges;
     }
 
     /** Flat score change (stage bonuses, rewards). */
-    addScore(n) { this.score = Math.min(CONFIG.maxScore, this.score + n); }
+    addScore(n) {
+      if (n > 0 && this.doubleActive) n *= 2; // DOUBLE GAINS
+      this.score = Math.min(CONFIG.maxScore, this.score + n);
+    }
+
+    /** GUARD: swallow one hit. Returns the result to show, or null if there is no guard. */
+    _guarded() {
+      if (!this.guardActive) return null;
+      this.guardCharges -= 1;
+      if (this.guardCharges <= 0) this.fx.guard = 0;
+      return { delta: 0, label: `BLOCKED  ${this.guardCharges} LEFT`, tone: 'neutral', absorbed: true, guarded: true };
+    }
 
     // ---- internal helpers -----------------------------------------------------
 
@@ -1023,7 +1060,7 @@ const __mod_mathRules = (() => {
 
     /** The player touched `token`. Applies the stage operation to the score. */
     resolveTouch(token) {
-      if (token.kind === 'subBullet') return this._negative(token.value);
+      if (token.kind === 'subBullet') return this._guarded() || this._negative(token.value);
 
       const op = token.op || this.stageOp;
       let x = token.kind === 'frac' ? token.num / token.den : token.value;
@@ -1036,6 +1073,7 @@ const __mod_mathRules = (() => {
       }
 
       let eff = operandEffect(op, x);
+      if (eff === 'down' || eff === 'kill' || eff === 'life') { const g = this._guarded(); if (g) return g; }
 
       // x^2 power-up: a GOOD number is squared (keeping its sign), so it does more.
       if (this.squareActive && eff === 'up') x = Math.sign(x) * x * x;
@@ -1062,6 +1100,7 @@ const __mod_mathRules = (() => {
           result = S - Math.max(1, Math.round(loss * this.character.lossScale * this.mods.loss));
         }
       }
+      if (eff === 'up' && this.doubleActive) result = S + (result - S) * 2; // DOUBLE GAINS
       result = Math.min(CONFIG.maxScore, result);
       this.score = result;
       const delta = result - S;
@@ -1371,6 +1410,9 @@ const __mod_entities = (() => {
     pi: { glyph: 'π', color: '#ffd75e', name: 'PI MAGNET' },
     sq: { glyph: 'x²', color: '#c79bff', name: 'EXPONENT' },
     slow: { glyph: 'Δt', color: '#8fb3ff', name: 'SLOW TIME' },
+    guard: { glyph: '∞', color: '#5dffb0', name: 'GUARD' },
+    double: { glyph: 'Σ×2', color: '#ffb347', name: 'DOUBLE GAINS' },
+    freeze: { glyph: '‖', color: '#9be7ff', name: 'FREEZE' },
     life: { glyph: '♥', color: '#ff5d8f', name: 'EXTRA LIFE' }, // instant, not timed
   };
 
@@ -1707,7 +1749,7 @@ const __mod_entities = (() => {
       this.cooldown = c.fireCooldown * (this.mods?.cooldown ?? 1);
       this.volley++;
 
-      const dmg = c.damage * this.sizeScale * (this.mods?.damage ?? 1); // a shrunken ship hits weaker
+      const dmg = c.damage * this.sizeScale * (this.mods?.damage ?? 1) * (this.counterMul ?? 1); // a shrunken ship hits weaker
       const make = (x, angle, d, color) => new Bullet({
         x, y: this.y - 20, owner: 'player', damage: d, color,
         vx: Math.sin(angle) * 640, vy: -Math.cos(angle) * 640,
@@ -1859,9 +1901,11 @@ const __mod_spawner = (() => {
      */
     update(dt, stage, ctx, tokens, powerups, obstacles = [], gates = []) {
       const hold = Boolean(ctx.hold); // true during a boss fight: only power-ups and hearts drop
+      // While a MAKE-N gate is on screen no new numbers or waves appear, so the answers stay readable
+      const gateOn = gates.some((g) => !g.dead && !g.resolved) || Boolean(ctx.freeze); // (FREEZE also pauses new waves)
 
       // --- tokens: spawn faster as the stage progresses and as loops increase ---
-      if (!hold) {
+      if (!hold && !gateOn) {
         this.timer -= dt;
         if (this.timer <= 0) {
           const interval = (stage.spawnInterval / ctx.difficulty) * (1 - 0.35 * ctx.intensity);
@@ -1875,14 +1919,14 @@ const __mod_spawner = (() => {
       this.powerTimer -= dt;
       if (this.powerTimer <= 0) {
         this.powerTimer = this._nextPowerTime();
-        const kinds = ['abs', 'pi', 'sq', 'slow'];
+        const kinds = ['abs', 'pi', 'sq', 'slow', 'guard', 'double', 'freeze'];
         const kind = kinds[Math.floor(this.rng() * kinds.length)];
         powerups.push(new PowerUp(kind, 40 + this.rng() * (W - 80)));
       }
 
       // --- obstacles: orange rocks and walls that cost a life ------------------
       // (rocks keep falling during a boss fight too, a bit less often and never walls)
-      if (stage.obstacles) {
+      if (stage.obstacles && !ctx.freeze) {
         this.obstacleTimer -= dt;
         if (this.obstacleTimer <= 0) {
           const [lo, hi] = stage.obstacles.interval;
@@ -1895,7 +1939,7 @@ const __mod_spawner = (() => {
       }
 
       // --- formations: V, row and ring waves -----------------------------------
-      if (!hold) {
+      if (!hold && !gateOn) {
         this.formationTimer -= dt;
         if (this.formationTimer <= 0) {
           const [lo, hi] = CONFIG.formations.interval;
@@ -2142,7 +2186,24 @@ const __mod_leaderboard = (() => {
       body: JSON.stringify(payload),
       redirect: 'follow',
     });
-    return Boolean(res && res.ok);
+    if (!res || !res.ok) return false;
+    try { const d = await res.json(); return d?.ok !== false; } catch { return true; }
+  }
+
+  /** Call the Google Sheet script and return its JSON answer ({ ok, ... }); never throws. */
+  async function sheetCall(fetchFn, url, payload) {
+    try {
+      const res = await fetchFn(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(payload),
+        redirect: 'follow',
+      });
+      if (!res || !res.ok) return { ok: false, error: 'network' };
+      return (await res.json()) || { ok: false, error: 'network' };
+    } catch {
+      return { ok: false, error: 'network' };
+    }
   }
 
   /** Ask the Google Sheet for the best rows. Resolves an array, or null if unreachable. */
@@ -2159,6 +2220,11 @@ const __mod_leaderboard = (() => {
   }
 
   const isRow = (r) => r && typeof r.name === 'string' && Number.isFinite(r.score);
+  /** Keep only the best row of every name (names are not case sensitive). Input must be sorted best first. */
+  const bestPerName = (sorted) => {
+    const seen = new Set();
+    return sorted.filter((r) => { const k = cleanName(r.name).toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+  };
   const byScoreDesc = (a, b) => b.score - a.score || (a.t || 0) - (b.t || 0); // ties: older first
   const tidy = (r) => ({
     name: cleanName(r.name),
@@ -2179,6 +2245,7 @@ const __mod_leaderboard = (() => {
       this.size = opts.size || CONFIG.leaderboard.size;
       this.onlineUrl = normalizeUrl(opts.onlineUrl ?? CONFIG.leaderboard.onlineUrl);
       this.fetchFn = opts.fetchFn || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+      this.pid = '';    // the registered player's id (sent with every online score)
       this.memory = []; // fallback when localStorage is blocked (private mode, etc.)
     }
 
@@ -2244,7 +2311,7 @@ const __mod_leaderboard = (() => {
       if (!this.online) return false;
       const body = JSON.stringify(tidy(entry));
       try {
-        if (isSheetUrl(this.onlineUrl)) return await sheetPost(this.fetchFn, this.onlineUrl, { mode: 'classic', ...tidy(entry) });
+        if (isSheetUrl(this.onlineUrl)) return await sheetPost(this.fetchFn, this.onlineUrl, { mode: 'classic', pid: this.pid, ...tidy(entry) });
         const res = await this.fetchFn(`${this.onlineUrl}/scores.json`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2261,22 +2328,114 @@ const __mod_leaderboard = (() => {
       if (!this.online) return null;
       try {
         if (isSheetUrl(this.onlineUrl)) {
-          const list = await sheetGet(this.fetchFn, this.onlineUrl, { mode: 'classic', limit: this.size });
-          return list ? list.filter(isRow).map(tidy).sort(byScoreDesc).slice(0, this.size) : null;
+          const list = await sheetGet(this.fetchFn, this.onlineUrl, { mode: 'classic', limit: this.size * 4 });
+          return list ? bestPerName(list.filter(isRow).map(tidy).sort(byScoreDesc)).slice(0, this.size) : null;
         }
         // Firebase REST: ask for the highest `score` values (needs ".indexOn": "score")
-        const query = `orderBy=${encodeURIComponent('"score"')}&limitToLast=${this.size}`;
+        const query = `orderBy=${encodeURIComponent('"score"')}&limitToLast=${this.size * 4}`;
         const res = await this.fetchFn(`${this.onlineUrl}/scores.json?${query}`);
         if (!res || !res.ok) return null;
         const data = await res.json();
         if (!data || typeof data !== 'object') return [];
-        return Object.values(data).filter(isRow).map(tidy).sort(byScoreDesc).slice(0, this.size);
+        return bestPerName(Object.values(data).filter(isRow).map(tidy).sort(byScoreDesc)).slice(0, this.size);
       } catch {
         return null;
       }
     }
   }
-  return { cleanName, normalizeUrl, isSheetUrl, sheetPost, sheetGet, Leaderboard };
+  return { cleanName, normalizeUrl, isSheetUrl, sheetPost, sheetCall, sheetGet, Leaderboard };
+})();
+
+/* ======================= FILE: profile.js ======================= */
+const __mod_profile = (() => {
+  // =============================================================================
+  // profile.js  -  the registered player ("who is playing on this phone").
+  //
+  // A player registers ONCE with a name and a mobile number. The mobile number is
+  // only used to tell players apart: it is sent to the Google Sheet script, which
+  // keeps a scrambled (hashed) version, and it is NEVER saved on the phone, shown
+  // on a board, or written into the sheet in plain form.
+  //
+  // This phone remembers only { name, pid }:  pid = the player's id from the sheet.
+  // Registering again with the same number (on any phone) gives the same profile back.
+  // =============================================================================
+
+  const { CONFIG } = __mod_config;
+  const { cleanName, normalizeUrl, isSheetUrl, sheetCall } = __mod_leaderboard;
+
+  /** Turn 09171234567, +63 917 123 4567, 639171234567 or 9171234567 into 09171234567. Bad numbers give ''. */
+  function normalizePhone(raw) {
+    let d = String(raw ?? '').replace(/\D/g, '');
+    if (d.length === 12 && d.startsWith('639')) d = `0${d.slice(2)}`;
+    else if (d.length === 10 && d.startsWith('9')) d = `0${d}`;
+    return /^09\d{9}$/.test(d) ? d : '';
+  }
+
+  function safeStorage() {
+    try { return globalThis.localStorage ?? null; } catch { return null; }
+  }
+
+  class Profile {
+    /** @param {{storage?, key?, onlineUrl?, fetchFn?}} opts  (tests inject fakes) */
+    constructor(opts = {}) {
+      this.storage = opts.storage !== undefined ? opts.storage : safeStorage();
+      this.key = opts.key || 'mathStriker.profile.v1';
+      this.onlineUrl = normalizeUrl(opts.onlineUrl ?? CONFIG.leaderboard.onlineUrl);
+      this.fetchFn = opts.fetchFn || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+      this.name = '';
+      this.pid = '';
+      this._load();
+    }
+
+    get has() { return Boolean(this.name); }
+    /** True when registration is checked by the Google Sheet (names and numbers are unique). */
+    get checked() { return Boolean(this.onlineUrl && this.fetchFn && isSheetUrl(this.onlineUrl)); }
+
+    _load() {
+      try {
+        const d = JSON.parse(this.storage?.getItem(this.key) || 'null');
+        if (d && typeof d.name === 'string' && d.name) { this.name = cleanName(d.name); this.pid = String(d.pid || ''); }
+      } catch { /* corrupted: register again */ }
+    }
+
+    _save() {
+      try { this.storage?.setItem(this.key, JSON.stringify({ name: this.name, pid: this.pid })); } catch { /* private mode */ }
+    }
+
+    /** Forget the player on this phone (used by SWITCH PLAYER). */
+    clear() {
+      this.name = '';
+      this.pid = '';
+      try { this.storage?.removeItem(this.key); } catch { /* ignore */ }
+    }
+
+    /**
+     * Register, or log in again with the same number.
+     * Resolves { ok:true, name, pid, existing }  or  { ok:false, error: 'name' | 'phone' | 'name_taken' | 'network' }.
+     */
+    async register(rawName, rawPhone) {
+      const typed = String(rawName ?? '').trim();
+      if (!typed) return { ok: false, error: 'name' };
+      const phone = normalizePhone(rawPhone);
+      if (!phone) return { ok: false, error: 'phone' };
+      const name = cleanName(typed);
+
+      if (!this.checked) { // no shared database: a local profile only
+        this.name = name;
+        this.pid = `local-${Math.random().toString(36).slice(2, 10)}`;
+        this._save();
+        return { ok: true, name, pid: this.pid, existing: false };
+      }
+
+      const res = await sheetCall(this.fetchFn, this.onlineUrl, { action: 'register', name, phone });
+      if (!res.ok || !res.pid) return { ok: false, error: res.error || 'network' };
+      this.name = cleanName(res.name || name);
+      this.pid = String(res.pid);
+      this._save();
+      return { ok: true, name: this.name, pid: this.pid, existing: Boolean(res.existing) };
+    }
+  }
+  return { normalizePhone, Profile };
 })();
 
 /* ======================= FILE: ranked.js ======================= */
@@ -2350,6 +2509,8 @@ const __mod_ranked = (() => {
     }
 
     get season() { return seasonId(this.now()); }
+    pid = '';  // the registered player's id (sent with every online score)
+
     get online() { return Boolean(this.onlineUrl && this.fetchFn); }
 
     _load() {
@@ -2411,7 +2572,7 @@ const __mod_ranked = (() => {
     async submitOnline(row) {
       if (!this.online) return false;
       try {
-        if (isSheetUrl(this.onlineUrl)) return await sheetPost(this.fetchFn, this.onlineUrl, { mode: 'ranked', season: this.season, ...tidy(row) });
+        if (isSheetUrl(this.onlineUrl)) return await sheetPost(this.fetchFn, this.onlineUrl, { mode: 'ranked', season: this.season, pid: this.pid, ...tidy(row) });
         const res = await this.fetchFn(`${this.onlineUrl}/ranked/${this.season}.json`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tidy(row)),
         });
@@ -2832,6 +2993,12 @@ const __mod_ui = (() => {
       size: 28, align: 'left', color: low ? COLORS.bad : '#ffffff', glow: 8,
     });
 
+    if (game.runTarget) {
+      drawText(ctx, `BEAT ${game.runTarget.by}: ${game.runTarget.score}`, 14, 66, {
+        size: 11, align: 'left', color: game.targetBeaten ? COLORS.good : COLORS.gold, glow: 4,
+      });
+    }
+
     drawText(ctx, `${stage.op}  ${stage.name}`, W / 2 + 10, 13, { size: 11, color: `hsl(${stage.hue},90%,70%)` });
     const prog = clamp(game.stageTime / CONFIG.stageDuration, 0, 1);
     const bossPhase = game.phase !== 'stage';
@@ -2894,7 +3061,7 @@ const __mod_ui = (() => {
 
     // Bottom-right: active power-up timers
     let y = H - 16;
-    for (const kind of ['abs', 'pi', 'sq', 'slow']) {
+    for (const kind of ['abs', 'pi', 'sq', 'slow', 'double', 'freeze', 'guard']) {
       const left = r.fx[kind];
       if (left <= 0) continue;
       const info = POWERUP_INFO[kind];
@@ -3071,12 +3238,27 @@ const __mod_ui = (() => {
     game.menuButtons.push({ id: 'howto', ...drawButton(ctx, { x: W / 2 - 200, y: 566, w: 195, h: 40 }, 'HOW TO PLAY', COLORS.good) });
     game.menuButtons.push({ id: 'board', ...drawButton(ctx, { x: W / 2 + 5, y: 566, w: 195, h: 40 }, 'LEADERBOARD', COLORS.gold) });
 
-    drawText(ctx, 'DRAG to fly  ·  auto-fire  ·  BOMB = Prime Bomb', W / 2, 630, { size: 12, color: '#b9c9e6', weight: 'normal' });
-    drawText(ctx, `Rocks, walls and wrong gates cost a LIFE (you have ${CONFIG.maxLives}).`, W / 2, 650, { size: 12, color: COLORS.hazard, weight: 'normal' });
-    drawText(ctx, 'Your SCORE is your health. Beat a boss to level up.', W / 2, 670, { size: 12, color: COLORS.gold, weight: 'normal' });
-    if (game.highScore > 0) {
-      drawText(ctx, `BEST  ${game.highScore}`, W / 2, 698, { size: 12, color: '#8fb3d9' });
+    // Player and install row
+    const p = game.profile;
+    const who = p?.has ? p.name : 'NOT REGISTERED';
+    if (game.standalone) {
+      game.menuButtons.push({ id: 'switch', ...drawButton(ctx, { x: W / 2 - 200, y: 614, w: 400, h: 34 }, `PLAYER: ${who}  ·  SWITCH`, '#cfe0ff') });
+    } else {
+      game.menuButtons.push({ id: 'switch', ...drawButton(ctx, { x: W / 2 - 200, y: 614, w: 255, h: 34 }, `PLAYER: ${who}  ·  SWITCH`, '#cfe0ff') });
+      game.menuButtons.push({ id: 'install', ...drawButton(ctx, { x: W / 2 + 65, y: 614, w: 135, h: 34 }, 'INSTALL', '#8fb3d9') });
     }
+
+    drawText(ctx, 'DRAG to fly  ·  auto-fire  ·  BOMB = Prime Bomb', W / 2, 668, { size: 12, color: '#b9c9e6', weight: 'normal' });
+    drawText(ctx, 'Your SCORE is your health. Beat a boss to level up.', W / 2, 688, { size: 12, color: COLORS.gold, weight: 'normal' });
+    if (game.highScore > 0) {
+      drawText(ctx, `BEST  ${game.highScore}`, W / 2, 708, { size: 12, color: '#8fb3d9' });
+    }
+
+    // Online status (top left)
+    const st = { online: ['ONLINE', COLORS.good], connecting: ['CONNECTING...', COLORS.gold], offline: ['OFFLINE', COLORS.bad], off: ['SAVED ON THIS PHONE', '#8fb3d9'] }[game.onlineStatus] || ['', '#8fb3d9'];
+    ctx.fillStyle = st[1];
+    ctx.beginPath(); ctx.arc(20, 33, 4, 0, Math.PI * 2); ctx.fill();
+    drawText(ctx, st[0], 30, 33, { size: 11, align: 'left', color: st[1] });
   }
 
 
@@ -3120,6 +3302,9 @@ const __mod_ui = (() => {
         ['π  PI MAGNET', COLORS.gold, ['Pulls every pickup toward you.']],
         ['x²  EXPONENT', '#c79bff', ['Squares the good numbers you catch.']],
         ['Δt  SLOW TIME', '#8fb3ff', ['The whole game slows down for a while.']],
+        ['∞  GUARD', '#5dffb0', ['Blocks the next 3 hits that would hurt you.']],
+        ['Σ×2  DOUBLE GAINS', '#ffb347', ['Everything that raises your score counts double.']],
+        ['‖  FREEZE', '#9be7ff', ['Enemies, their bullets and rocks stop for 3 seconds.']],
         ['PRIME BOMB', COLORS.good, ['Destroys hostile signs and non-prime numbers.', 'Prime numbers (2, 3, 5, 7...) survive it.']],
       ],
     },
@@ -3180,6 +3365,70 @@ const __mod_ui = (() => {
     game.howButtons.push({ id: 'how-next', ...drawButton(ctx, { x: W - 28 - 190, y: 660, w: 190, h: 44 }, last ? 'GOT IT!' : 'NEXT', last ? COLORS.good : COLORS.gold) });
     game.howButtons.push({ id: 'how-skip', x: W - 90, y: 8, w: 82, h: 34 });
     drawText(ctx, 'SKIP', W - 49, 26, { size: 13, color: '#8fb3d9' });
+  }
+
+  // -----------------------------------------------------------------------------
+  // INSTALL help: how to put the game on the home screen (works for iPhone and Android)
+  // -----------------------------------------------------------------------------
+  function drawInstall(ctx, game) {
+    drawText(ctx, 'INSTALL THE GAME', W / 2, 64, { size: 28, color: COLORS.gold, glow: 14 });
+    drawText(ctx, 'Get an icon on your home screen and play fullscreen.', W / 2, 96, { size: 12, color: '#9fb6d8', weight: 'normal' });
+    const sections = [
+      ['iPHONE  (open this page in Safari)', COLORS.cyan, ['1. Tap the SHARE button (square with an arrow).', '2. Scroll down and tap "Add to Home Screen".', '3. Tap "Add". Open the game from the new icon.']],
+      ['ANDROID  (Chrome)', COLORS.good, ['1. Tap the menu button (three dots, top right).', '2. Tap "Install app" or "Add to Home screen".', '3. Tap "Install". Open the game from the new icon.']],
+    ];
+    let y = 150;
+    const first = game.platform === 'android' ? 1 : 0; // show the player's own phone first
+    [sections[first], sections[1 - first]].forEach(([head, color, lines]) => {
+      drawText(ctx, head, 28, y, { size: 15, align: 'left', color, glow: 6 });
+      y += 26;
+      lines.forEach((l) => { drawText(ctx, l, 28, y, { size: 13, align: 'left', color: '#d3e0f5', weight: 'normal' }); y += 22; });
+      y += 28;
+    });
+    drawText(ctx, 'Your name and scores stay on your profile.', W / 2, y + 10, { size: 12, color: '#8fb3d9', weight: 'normal' });
+    const pulse = 0.65 + 0.35 * Math.sin(game.time * 4);
+    ctx.globalAlpha = pulse;
+    drawText(ctx, 'TAP ANYWHERE TO GO BACK', W / 2, 640, { size: 14, color: '#ffffff', glow: 8 });
+    ctx.globalAlpha = 1;
+  }
+
+  // -----------------------------------------------------------------------------
+  // A friend's challenge (opened from a link): shown over the menu until answered
+  // -----------------------------------------------------------------------------
+  function drawChallengeModal(ctx, game) {
+    const c = game.challenge;
+    if (!c) return;
+    ctx.fillStyle = 'rgba(2,6,16,0.78)';
+    ctx.fillRect(0, 0, W, H);
+    const x = 30, y = 220, w = W - 60, h = 250;
+    ctx.fillStyle = '#07142a';
+    ctx.strokeStyle = COLORS.gold;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = COLORS.gold; ctx.shadowBlur = 20;
+    pathRoundRect(ctx, x, y, w, h, 18);
+    ctx.fill(); ctx.stroke();
+    ctx.shadowBlur = 0;
+    drawText(ctx, 'CHALLENGE!', W / 2, y + 40, { size: 26, color: COLORS.gold, glow: 12 });
+    drawText(ctx, `${c.by} challenges you`, W / 2, y + 80, { size: 16, color: '#ffffff' });
+    drawText(ctx, `beat ${c.beat}`, W / 2, y + 120, { size: 34, color: COLORS.cyan, glow: 12 });
+    drawText(ctx, `in ${c.mode === 'ranked' ? 'RANKED' : 'CLASSIC'}`, W / 2, y + 152, { size: 14, color: '#9fb6d8' });
+    game.challengeButtons = [
+      { id: 'ch-accept', ...drawButton(ctx, { x: x + 20, y: y + 178, w: w - 100, h: 50 }, 'ACCEPT AND PLAY', COLORS.good) },
+      { id: 'ch-close', ...drawButton(ctx, { x: x + w - 70, y: y + 178, w: 50, h: 50 }, 'X', '#8fb3d9') },
+    ];
+  }
+
+  // A short message at the bottom of the screen ("LINK COPIED!", "WELCOME, MARIA!")
+  function drawToast(ctx, toast) {
+    const a = clamp(Math.min(toast.t / 0.3, 1), 0, 1);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = 'rgba(7,20,42,0.92)';
+    ctx.strokeStyle = COLORS.gold;
+    ctx.lineWidth = 2;
+    pathRoundRect(ctx, 40, 150, W - 80, 44, 12);
+    ctx.fill(); ctx.stroke();
+    drawText(ctx, toast.text, W / 2, 172, { size: 15, color: COLORS.gold });
+    ctx.globalAlpha = 1;
   }
 
   // -----------------------------------------------------------------------------
@@ -3267,7 +3516,7 @@ const __mod_ui = (() => {
         const nt = nextTier(r.best);
         if (nt) drawText(ctx, `${nt.min - r.best} more for ${nt.name}`, W / 2, 418, { size: 12, color: nt.color, weight: 'normal' });
         else drawText(ctx, 'TOP TIER REACHED', W / 2, 418, { size: 12, color: COLORS.gold });
-        if (r.rank > 0) drawText(ctx, `#${r.rank} this season on this phone`, W / 2, 442, { size: 11, color: '#9fb6d8', weight: 'normal' });
+        if (r.rank > 0) drawText(ctx, `#${r.rank} this season on this phone`, W / 2, 438, { size: 11, color: '#9fb6d8', weight: 'normal' });
       }
     } else {
       if (game.newBest) drawText(ctx, 'NEW HIGH SCORE!', W / 2, 368, { size: 16, color: COLORS.gold, glow: 10 });
@@ -3280,13 +3529,21 @@ const __mod_ui = (() => {
       }
     }
 
+    if (game.runTarget) {
+      const t = game.runTarget;
+      drawText(ctx, game.targetBeaten ? `YOU BEAT ${t.by}'S ${t.score}!` : `${t.by}'s score: ${t.score}  -  not beaten yet`, W / 2, 458, {
+        size: 13, color: game.targetBeaten ? COLORS.good : COLORS.gold, glow: game.targetBeaten ? 8 : 0,
+      });
+    }
+
     game.goButtons = [];
     if (game.stateTime > 0.8 && !game.nameEntry) {
       const bx = W / 2 - 120;
       game.goButtons = [
-        { id: 'again', ...drawButton(ctx, { x: bx, y: 466, w: 240, h: 46 }, 'PLAY AGAIN', '#ffffff') },
-        { id: 'board', ...drawButton(ctx, { x: bx, y: 524, w: 240, h: 46 }, 'LEADERBOARD', COLORS.gold) },
-        { id: 'menu', ...drawButton(ctx, { x: bx, y: 582, w: 240, h: 46 }, 'MENU', '#8fb3d9') },
+        { id: 'again', ...drawButton(ctx, { x: bx, y: 472, w: 240, h: 42 }, 'PLAY AGAIN', '#ffffff') },
+        { id: 'challenge', ...drawButton(ctx, { x: bx, y: 520, w: 240, h: 42 }, 'CHALLENGE A FRIEND', COLORS.cyan) },
+        { id: 'board', ...drawButton(ctx, { x: bx, y: 568, w: 240, h: 42 }, 'LEADERBOARD', COLORS.gold) },
+        { id: 'menu', ...drawButton(ctx, { x: bx, y: 616, w: 240, h: 42 }, 'MENU', '#8fb3d9') },
       ];
     }
   }
@@ -3399,7 +3656,7 @@ const __mod_ui = (() => {
       game.lbButtons.push({ id: 'back', ...drawButton(ctx, { x: W / 2 - 100, y: 606, w: 200, h: 48 }, 'BACK', '#ffffff') });
     }
   }
-  return { drawHUD, drawBanner, drawMenu, HOW_PAGE_COUNT, drawHowTo, drawPause, drawUpgrade, drawGameOver, drawLeaderboard };
+  return { drawHUD, drawBanner, drawMenu, HOW_PAGE_COUNT, drawHowTo, drawInstall, drawChallengeModal, drawToast, drawPause, drawUpgrade, drawGameOver, drawLeaderboard };
 })();
 
 /* ======================= FILE: game.js ======================= */
@@ -3432,9 +3689,10 @@ const __mod_game = (() => {
   const { pickCards, applyUpgrade } = __mod_upgrades;
   const { RankedBoard, seasonSeed } = __mod_ranked;
   const { mulberry32 } = __mod_rng;
+  const { detectPlatform } = __mod_inapp;
   const { drawText } = __mod_draw;
   const { Leaderboard, cleanName } = __mod_leaderboard;
-  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, HOW_PAGE_COUNT } = __mod_ui;
+  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, drawInstall, drawChallengeModal, drawToast, HOW_PAGE_COUNT } = __mod_ui;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -3454,7 +3712,7 @@ const __mod_game = (() => {
      * @param {Sfx} sfx
      * @param {{dpr?: number, rng?: () => number, leaderboard?: Leaderboard, rankedBoard?: RankedBoard,
      *          askName?: (lastName: string, score: number) => Promise<string|null>,
-     *          music?: Music}} options
+     *          music?: Music, profile?: Profile, challenge?: {beat, by, mode}, openRegister?: () => Promise}} options
      */
     constructor(canvas, input, sfx, options = {}) {
       this.canvas = canvas;
@@ -3467,6 +3725,17 @@ const __mod_game = (() => {
       this.rankedBoard = options.rankedBoard || new RankedBoard({ onlineUrl: CONFIG.leaderboard.onlineUrl });
       this.askName = options.askName || null; // main.js shows the "enter your name" box
       this.music = options.music || null;
+      this.profile = options.profile || null;           // the registered player (name + id)
+      this.openRegister = options.openRegister || null; // SWITCH PLAYER (shows the register box)
+      this.challenge = options.challenge || null;       // from a friend's link: ?beat=5230&by=MARIA&m=rank
+      this.challengeOpen = Boolean(this.challenge);
+      this.pendingTarget = null;
+      this.runTarget = null;
+      this.targetBeaten = false;
+      this.toast = null;
+      this.onlineStatus = 'off';                        // 'off' | 'connecting' | 'online' | 'offline'
+      this.standalone = this._isStandalone();
+      this.platform = detectPlatform(globalThis.navigator?.userAgent || '');
       this.mode = 'ranked';   // RANKED is the default mode
       this.lbView = { tab: 'device', from: 'menu', highlight: null, online: { status: 'idle', rows: [] }, ranked: { status: 'idle', rows: [] } };
       this.lbButtons = []; // tap targets, filled in while drawing each screen
@@ -3487,6 +3756,8 @@ const __mod_game = (() => {
 
       this.startRun(CHARACTERS[0].id); // initialise all fields, then go back to the menu
       this.state = 'menu';
+      this._applyProfile();
+      this.checkOnline();
     }
 
     // ===========================================================================
@@ -3506,6 +3777,12 @@ const __mod_game = (() => {
     startRun(characterId, mode = this.mode) {
       const character = CHARACTERS.find((c) => c.id === characterId) || CHARACTERS[0];
       this.mode = mode === 'ranked' ? 'ranked' : 'classic';
+      this.classicSend = null;
+      this.rankedSend = null;
+      this.counterT = 0;
+      this.runTarget = this.pendingTarget; // a friend's score to beat (or null)
+      this.pendingTarget = null;
+      this.targetBeaten = false;
       this.season = this.rankedBoard.season;
       // Ranked: everything random that affects the game comes from a season seed, so
       // every player faces the same enemy sequence. Looks (particles) use this.rng.
@@ -3695,6 +3972,7 @@ const __mod_game = (() => {
       if (this.state === 'playing' && this.rules?.fx?.slow > 0) dt *= CONFIG.slowFactor;
       this.time += dt;
       this.stateTime += dt;
+      if (this.toast) { this.toast.t -= dt; if (this.toast.t <= 0) this.toast = null; }
       if (this.input.wasPressed('mute')) this.sfx.toggleMute();
 
       switch (this.state) {
@@ -3732,7 +4010,7 @@ const __mod_game = (() => {
     _syncMusic() {
       if (!this.music) return;
       let theme = null;
-      if (this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto') theme = 'menu';
+      if (this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' || this.state === 'install') theme = 'menu';
       else if (this.state === 'playing' || this.state === 'paused' || this.state === 'upgrade') {
         theme = this.phase === 'boss' ? 'boss' : `s${this.stageIndex % STAGES.length}`;
       }
@@ -3746,6 +4024,92 @@ const __mod_game = (() => {
       if (inp.wasPressed('pick1')) this.menuIndex = 0;
       if (inp.wasPressed('pick2')) this.menuIndex = 1;
       if (inp.wasPressed('confirm')) this.beginFromMenu(this.menuIndex);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Player profile, online status, challenge links, install help
+    // ---------------------------------------------------------------------------
+
+    _isStandalone() {
+      try { return Boolean(globalThis.navigator?.standalone || globalThis.matchMedia?.('(display-mode: standalone)').matches); } catch { return false; }
+    }
+
+    /** Give the boards the registered player's id and name. */
+    _applyProfile() {
+      if (!this.profile?.has) return;
+      this.leaderboard.pid = this.profile.pid;
+      this.rankedBoard.pid = this.profile.pid;
+      this.leaderboard.lastName = this.profile.name;
+    }
+
+    /** main.js calls this when registration finishes (or when a saved player was found). */
+    profileReady(res) {
+      this._applyProfile();
+      if (res && res.ok && !res.silent) this.showToast(res.existing ? `WELCOME BACK, ${res.name}!` : `WELCOME, ${res.name}!`);
+      this.checkOnline();
+    }
+
+    /** SWITCH PLAYER: ask for another name and number. */
+    switchPlayer() {
+      if (!this.openRegister) return;
+      Promise.resolve(this.openRegister()).then((res) => { if (res) this.profileReady(res); }).catch(() => {});
+    }
+
+    /** Ask the shared board once, to show Online / Offline on the menu. */
+    checkOnline() {
+      if (!this.leaderboard.online) { this.onlineStatus = 'off'; return; }
+      this.onlineStatus = 'connecting';
+      Promise.resolve()
+        .then(() => this.leaderboard.fetchOnline())
+        .then((rows) => { this.onlineStatus = rows ? 'online' : 'offline'; })
+        .catch(() => { this.onlineStatus = 'offline'; });
+    }
+
+    showToast(text, secs = 2.6) { this.toast = { text, t: secs }; }
+
+    /** AXIOM's passive: after taking a hit, shots hit harder for a few seconds. */
+    triggerCounter() {
+      const c = this.character?.counter;
+      if (!c) return;
+      if (!(this.counterT > 0)) this.addText(this.player.x, this.player.y - 52, 'COUNTER!', COLORS.hazard, 18);
+      this.counterT = c.secs;
+    }
+
+    /** The link a friend opens to take on this score. */
+    challengeLink() {
+      const score = Math.round(this.peakScore);
+      const name = this.profile?.name || this.leaderboard.lastName || 'PLAYER';
+      const loc = globalThis.location;
+      const base = loc ? `${loc.origin}${loc.pathname}` : '';
+      const url = `${base}?beat=${score}&by=${encodeURIComponent(name)}&m=${this.mode === 'ranked' ? 'rank' : 'classic'}`;
+      return { url, text: `${name} challenges you: beat ${score} in Math Striker!`, score };
+    }
+
+    /** CHALLENGE A FRIEND: share the link (or copy it). */
+    async shareChallenge() {
+      const { url, text } = this.challengeLink();
+      const nav = globalThis.navigator;
+      try {
+        if (nav?.share) { await nav.share({ title: 'Math Striker', text, url }); return; }
+      } catch (e) {
+        if (e && e.name === 'AbortError') return; // the player closed the share sheet
+      }
+      try {
+        await nav.clipboard.writeText(`${text} ${url}`);
+        this.showToast('LINK COPIED!');
+      } catch {
+        this.showToast('COULD NOT COPY THE LINK');
+      }
+    }
+
+    /** Accept a friend's challenge from the menu. */
+    acceptChallenge() {
+      const c = this.challenge;
+      this.challengeOpen = false;
+      if (!c) return;
+      this.mode = c.mode;
+      this.pendingTarget = { score: c.beat, by: c.by };
+      this.beginFromMenu(this.menuIndex);
     }
 
     /** Start a run from the menu in the selected mode. */
@@ -3770,6 +4134,8 @@ const __mod_game = (() => {
       this.howStart = startIndex;
       this._setState('howto');
     }
+
+    installOpen() { this._setState('install'); }
 
     closeHowTo() {
       try { globalThis.localStorage?.setItem('mathStriker.howto.v1', '1'); } catch { /* private mode */ }
@@ -3797,7 +4163,15 @@ const __mod_game = (() => {
 
       switch (this.state) {
         case 'menu': {
+          if (this.challengeOpen) { // the challenge box takes every tap until it is answered
+            const cb = buttonAt(this.challengeButtons || []);
+            if (cb?.id === 'ch-accept') this.acceptChallenge();
+            else if (cb?.id === 'ch-close') this.challengeOpen = false;
+            return true;
+          }
           const btn = buttonAt(this.menuButtons);
+          if (btn?.id === 'switch') { this.switchPlayer(); return true; }
+          if (btn?.id === 'install') { this.installOpen(); return true; }
           if (btn?.id === 'board') { this.openLeaderboard('menu'); return true; }
           if (btn?.id === 'howto') { this.openHowTo(null); return true; }
           if (btn?.id === 'mode-classic') { this.mode = 'classic'; return true; }
@@ -3831,8 +4205,14 @@ const __mod_game = (() => {
           if (this.stateTime <= 0.8 || this.nameEntry) return true; // ignore accidental taps
           const btn = buttonAt(this.goButtons);
           if (btn?.id === 'again') this.startRun(this.character.id);
-          else if (btn?.id === 'board') this.openLeaderboard('gameover', this.lastRow);
+          else if (btn?.id === 'board') this.openLeaderboard('gameover', this.lastRow, this.classicSend);
+          else if (btn?.id === 'challenge') this.shareChallenge();
           else if (btn?.id === 'menu') this._setState('menu');
+          return true;
+        }
+        case 'install': {
+          this._setState('menu');
+          this.stateTime = 1;
           return true;
         }
         case 'howto': {
@@ -3864,10 +4244,20 @@ const __mod_game = (() => {
       this._setState('gameover');
       const score = Math.round(this.peakScore);
       const ranked = this.mode === 'ranked';
+      const entry = { score, pilot: this.character.id, stage: this.stageIndex + 1 };
+
+      // A registered player never types a name: the score goes straight under their profile.
+      if (this.profile?.has) {
+        if (score <= 0) return;
+        this._applyProfile();
+        if (ranked) this._finishRanked(entry, this.profile.name, false);
+        else this._finishNameEntry(entry, this.profile.name, false);
+        return;
+      }
+
       const wantsName = score > 0 && (ranked || this.leaderboard.qualifies(score) || this.leaderboard.online);
       if (!this.askName || !wantsName) return;
 
-      const entry = { score, pilot: this.character.id, stage: this.stageIndex + 1 };
       this.nameEntry = true; // blocks the game-over buttons until the box is closed
       Promise.resolve()
         .then(() => this.askName(this.leaderboard.lastName, score))
@@ -3875,7 +4265,7 @@ const __mod_game = (() => {
         .then((name) => (ranked ? this._finishRanked(entry, name) : this._finishNameEntry(entry, name)));
     }
 
-    _finishNameEntry(entry, name) {
+    _finishNameEntry(entry, name, showBoard = true) {
       this.nameEntry = false;
       if (name == null || this.state !== 'gameover') return; // skipped
       const clean = cleanName(name);
@@ -3883,11 +4273,12 @@ const __mod_game = (() => {
       const saved = this.leaderboard.add({ ...entry, name: clean });
       this.lastRow = saved;
       const sent = this.leaderboard.online ? this.leaderboard.submitOnline(saved) : null;
-      this.openLeaderboard('gameover', saved, sent);
+      if (showBoard) this.openLeaderboard('gameover', saved, sent);
+      else this.classicSend = sent; // the board waits for this when it is opened
     }
 
     /** Ranked run finished and the player typed a name: keep the best score for that name. */
-    _finishRanked(entry, name) {
+    _finishRanked(entry, name, showBoard = true) {
       this.nameEntry = false;
       if (name == null || this.state !== 'gameover') return;
       const clean = cleanName(name);
@@ -3897,7 +4288,8 @@ const __mod_game = (() => {
       if (this.rankedBoard.online && res.improved) {
         this.rankedSend = this.rankedBoard.submitOnline(res.row).catch(() => false);
       }
-      this.openLeaderboard('gameover', res.row);
+      if (showBoard) this.openLeaderboard('gameover', res.row);
+      else this.lastRow = res.row;
     }
 
     /** Show the leaderboard. `from` = 'menu' | 'gameover'. `after` = a promise to wait for before loading WORLD scores. */
@@ -3940,6 +4332,8 @@ const __mod_game = (() => {
       this.multPulse = Math.max(0, this.multPulse - dt);
 
       // --- player input -------------------------------------------------------
+      this.counterT = Math.max(0, (this.counterT || 0) - dt);
+      this.player.counterMul = this.counterT > 0 ? this.character.counter.mult : 1;
       this.player.update(dt, this.input);
       if (this.input.isDown('shoot') || this.input.touch.active) { // touching = auto-fire
         const shots = this.player.tryFire();
@@ -3956,13 +4350,13 @@ const __mod_game = (() => {
         this.upgradeDelay -= dt;
         if (this.upgradeDelay <= 0) { this.openUpgrade(); return; }
       }
-      if (this.boss) this.updateBoss(dt);
+      if (this.boss) this.updateBoss(this.rules.freezeActive ? 0 : dt);
 
       this.spawner.update(
         dt, this.stage,
         {
           intensity: Math.min(1, this.stageTime / CONFIG.stageDuration), difficulty: this.difficulty,
-          playerX: this.player.x, lives: this.lives, hold: this.phase !== 'stage',
+          playerX: this.player.x, lives: this.lives, hold: this.phase !== 'stage', freeze: this.rules.freezeActive,
           stagesCleared: this.stageIndex,
         },
         this.tokens, this.powerups, this.obstacles, this.gates,
@@ -3974,6 +4368,12 @@ const __mod_game = (() => {
 
       // --- bookkeeping & death ------------------------------------------------
       this.peakScore = Math.max(this.peakScore, this.rules.score);
+      if (this.runTarget && !this.targetBeaten && this.peakScore > this.runTarget.score) {
+        this.targetBeaten = true; // a friend's score has been passed
+        this.showToast(`YOU BEAT ${this.runTarget.by}!`, 3);
+        this.flash = { color: 'rgba(255,215,94,0.35)', t: 0.4 };
+        this.sfx.play('card');
+      }
       this.displayScore += (this.rules.score - this.displayScore) * Math.min(1, dt * 10);
       if (this.lives <= 0) {
         this.beginDeath('lives');
@@ -4015,12 +4415,13 @@ const __mod_game = (() => {
     updateEntities(dt) {
       const p = this.player;
       const magnet = this.rules.magnetActive;
+      const fdt = this.rules.freezeActive ? 0 : dt; // FREEZE: enemies, their bullets and rocks stand still
 
       for (const t of this.tokens) {
-        t.update(dt);
+        t.update(t.role === 'good' ? dt : fdt);
 
         // Hostile shooters fire subtraction operators at the player.
-        if (t.tickFire(dt)) this.enemyFire(t);
+        if (t.tickFire(fdt)) this.enemyFire(t);
 
         // Pi Magnet: pull every positive pickup toward the player.
         if (magnet && t.role === 'good') {
@@ -4044,9 +4445,9 @@ const __mod_game = (() => {
           }
         }
       }
-      this.bullets.forEach((b) => b.update(dt));
+      this.bullets.forEach((b) => b.update(b.owner === 'enemy' ? fdt : dt));
       this.powerups.forEach((u) => u.update(dt));
-      this.obstacles.forEach((o) => o.update(dt));
+      this.obstacles.forEach((o) => o.update(fdt));
       this.gates.forEach((g) => g.update(dt));
       this.updateEffects(dt);
     }
@@ -4236,7 +4637,7 @@ const __mod_game = (() => {
         g.resolved = 'right';
         const reward = Math.round(CONFIG.gates.reward * (1 + 0.25 * this.stageIndex));
         this.rules.addScore(reward);
-        const kinds = ['abs', 'pi', 'sq', 'slow'];
+        const kinds = ['abs', 'pi', 'sq', 'slow', 'guard', 'double', 'freeze'];
         const kind = kinds[Math.floor(this.runRng() * kinds.length)];
         this.rules.activatePowerup(kind);
         this.addText(g.x, g.y - 30, `${g.text} = ${g.value}  CORRECT!  +${reward}`, COLORS.good, 18);
@@ -4269,6 +4670,7 @@ const __mod_game = (() => {
     /** An obstacle hit the ship. Death itself is decided later in updatePlaying. */
     loseLife(source, why = '') {
       const p = this.player;
+      this.triggerCounter();
       this.lives = Math.max(0, this.lives - 1);
       this.invuln = CONFIG.invulnSecs;
       if (source?.kind === 'meteor') source.dead = true; // the rock shatters
@@ -4321,6 +4723,7 @@ const __mod_game = (() => {
       }
       if (res.lethal) { this.shake = 0.8; this.flash = { color: 'rgba(255,255,255,0.6)', t: 0.3 }; }
       if (res.tone === 'bad') {
+        this.triggerCounter();
         this.shake = Math.max(this.shake, 0.35);
         this.flash = { color: 'rgba(255,40,80,0.35)', t: 0.18 };
         this.explode(x, y, COLORS.bad, 1.1);
@@ -4475,16 +4878,18 @@ const __mod_game = (() => {
       if (this.state === 'menu') drawMenu(ctx, this);
       else if (this.state === 'leaderboard') drawLeaderboard(ctx, this);
       else if (this.state === 'howto') drawHowTo(ctx, this);
+      else if (this.state === 'install') drawInstall(ctx, this);
       else this.drawWorld(ctx);
       ctx.restore();
 
       // Full-screen overlays are drawn outside the shake transform.
-      if (this.state !== 'menu' && this.state !== 'leaderboard' && this.state !== 'howto') {
+      if (this.state !== 'menu' && this.state !== 'leaderboard' && this.state !== 'howto' && this.state !== 'install') {
         if (this.flash) {
           ctx.fillStyle = this.flash.color;
           ctx.fillRect(0, 0, W, H);
         }
         this.drawLowScoreVignette(ctx);
+        if (this.state === 'playing' && this.rules.freezeActive) { ctx.fillStyle = 'rgba(140,220,255,0.13)'; ctx.fillRect(0, 0, W, H); }
         if (this.slowmo.t > 0 && this.slowmo.scale < 0.6) this.drawSlowmoTint(ctx);
         drawHUD(ctx, this);
         if (this.state === 'playing') drawBanner(ctx, this);
@@ -4492,10 +4897,12 @@ const __mod_game = (() => {
         if (this.state === 'upgrade') drawUpgrade(ctx, this);
         if (this.state === 'gameover') drawGameOver(ctx, this);
       }
+      if (this.state === 'menu' && this.challengeOpen) drawChallengeModal(ctx, this);
+      if (this.toast && this.toast.t > 0) drawToast(ctx, this.toast);
     }
 
     drawBackground(ctx) {
-      const hue = this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' ? 215 : this.stage.hue;
+      const hue = this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' || this.state === 'install' ? 215 : this.stage.hue;
       const g = ctx.createLinearGradient(0, 0, 0, H);
       g.addColorStop(0, `hsl(${hue}, 55%, 9%)`);
       g.addColorStop(1, `hsl(${hue + 20}, 60%, 4%)`);
@@ -4523,9 +4930,9 @@ const __mod_game = (() => {
 
     drawWorld(ctx) {
       this.obstacles.forEach((o) => o.draw(ctx));
-      this.gates.forEach((g) => g.draw(ctx));
       this.powerups.forEach((u) => u.draw(ctx));
       this.tokens.forEach((t) => t.draw(ctx));
+      this.gates.forEach((g) => g.draw(ctx)); // on top, so a pickup never hides an answer
       if (this.boss) this.boss.draw(ctx);
       this.bullets.forEach((b) => b.draw(ctx));
 
@@ -4574,6 +4981,24 @@ const __mod_game = (() => {
         ctx.arc(p.x, p.y, CONFIG.piMagnet.radius, 0, Math.PI * 2);
         ctx.stroke();
         drawText(ctx, 'π', p.x + 30, p.y - 26, { size: 16, color: POWERUP_INFO.pi.color, glow: 8 });
+      }
+      if (fx.guard > 0 && this.rules.guardCharges > 0) {
+        ctx.strokeStyle = POWERUP_INFO.guard.color;
+        ctx.lineWidth = 3;
+        ctx.shadowColor = POWERUP_INFO.guard.color; ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 40, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        drawText(ctx, `∞${this.rules.guardCharges}`, p.x, p.y + 56, { size: 13, color: POWERUP_INFO.guard.color, glow: 6 });
+      }
+      if (fx.double > 0) drawText(ctx, 'Σ×2', p.x - 34, p.y + 30, { size: 14, color: POWERUP_INFO.double.color, glow: 8 });
+      if (this.counterT > 0) {
+        ctx.strokeStyle = `rgba(255,159,67,${0.35 + 0.25 * Math.sin(this.time * 14)})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 36, 0, Math.PI * 2);
+        ctx.stroke();
       }
       if (fx.slow > 0) {
         ctx.strokeStyle = 'rgba(143,179,255,0.35)';
@@ -4630,6 +5055,8 @@ const __mod_main = (() => {
   const { Input } = __mod_input;
   const { Sfx, Music } = __mod_audio;
   const { Game } = __mod_game;
+  const { Profile } = __mod_profile;
+  const { cleanName } = __mod_leaderboard;
   const { detectInAppBrowser, detectPlatform, chromeIntentUrl, inAppHelp } = __mod_inapp;
 
   const $ = (id) => document.getElementById(id);
@@ -4666,7 +5093,9 @@ const __mod_main = (() => {
       $('inapp-open').hidden = false;
     }
 
-    const plainLink = location.origin + location.pathname; // without ?inapp=1
+    const keep = new URLSearchParams(location.search); // keep a challenge link (beat, by, m) but drop ?inapp=1
+    keep.delete('inapp');
+    const plainLink = location.origin + location.pathname + (keep.toString() ? `?${keep}` : '');
     $('inapp-copy').onclick = async () => {
       const ok = await copyText(plainLink);
       $('inapp-copy').textContent = ok ? 'LINK COPIED - PASTE IT IN YOUR BROWSER' : 'PRESS AND HOLD THE LINK BELOW TO COPY';
@@ -4726,6 +5155,61 @@ const __mod_main = (() => {
   }
 
   // -----------------------------------------------------------------------------
+  // Register / switch player. Resolves true when a player is registered, false if cancelled.
+  // -----------------------------------------------------------------------------
+  const REG_ERRORS = {
+    name: 'Please type your name.',
+    phone: 'Enter a valid mobile number like 09171234567.',
+    name_taken: 'That name is already used by another player. Try a different name.',
+    network: 'Cannot reach the server. Check your internet and try again.',
+    unknown: 'Something went wrong. Please try again.',
+  };
+
+  function askRegister(profile, { canCancel = false } = {}) {
+    return new Promise((resolve) => {
+      const box = $('register');
+      const form = $('reg-form');
+      const err = $('reg-error');
+      $('reg-title').textContent = canCancel ? 'SWITCH PLAYER' : 'REGISTER TO PLAY';
+      $('reg-intro').textContent = canCancel
+        ? 'Type the name and mobile number of the player who will play now. Same number = same profile.'
+        : 'Your name and mobile number keep every score under your own profile.';
+      $('reg-name').value = '';
+      $('reg-phone').value = '';
+      err.hidden = true;
+      $('reg-cancel').hidden = !canCancel;
+      box.hidden = false;
+      setTimeout(() => $('reg-name').focus(), 60);
+
+      const close = (value) => {
+        box.hidden = true;
+        form.onsubmit = null;
+        $('reg-cancel').onclick = null;
+        resolve(value);
+      };
+      $('reg-cancel').onclick = () => close(false);
+      form.onsubmit = async (e) => {
+        e.preventDefault();
+        const go = $('reg-go');
+        go.disabled = true;
+        go.textContent = 'CHECKING...';
+        const res = await profile.register($('reg-name').value, $('reg-phone').value);
+        go.disabled = false;
+        go.textContent = 'START PLAYING';
+        if (res.ok) close(res);
+        else { err.textContent = REG_ERRORS[res.error] || REG_ERRORS.unknown; err.hidden = false; }
+      };
+    });
+  }
+
+  /** A challenge link looks like  ?beat=5230&by=MARIA&m=rank  (m = rank | classic). */
+  function readChallenge() {
+    const beat = Math.floor(Number(params.get('beat')));
+    if (!Number.isFinite(beat) || beat <= 0 || beat > CONFIG.maxScore) return null;
+    return { beat, by: cleanName(params.get('by') || 'A FRIEND'), mode: params.get('m') === 'classic' ? 'classic' : 'ranked' };
+  }
+
+  // -----------------------------------------------------------------------------
   // The game
   // -----------------------------------------------------------------------------
   function startGame() {
@@ -4739,7 +5223,16 @@ const __mod_main = (() => {
     const input = new Input(window);
     const sfx = new Sfx();
     const music = new Music(sfx);
-    const game = new Game(canvas, input, sfx, { dpr, askName, music });
+    const profile = new Profile();
+    const game = new Game(canvas, input, sfx, {
+      dpr, askName, music, profile,
+      challenge: readChallenge(),
+      // SWITCH PLAYER button: ask again, and resolve the new profile (or null if cancelled)
+      openRegister: () => askRegister(profile, { canCancel: true }),
+    });
+    if (!profile.has) { // first visit: register before anything else
+      askRegister(profile).then((res) => game.profileReady(res));
+    } else game.profileReady({ ok: true, name: profile.name, existing: true, silent: true });
 
     // Browsers only allow audio and fullscreen after a tap, so do it on the first one.
     let firstTap = true;
