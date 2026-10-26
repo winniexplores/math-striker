@@ -3136,9 +3136,7 @@ const __mod_ui = (() => {
 
     drawText(ctx, 'LEADERBOARD', W / 2, 52, { size: 30, color: COLORS.gold, glow: 16 });
 
-    const tabs = [['device', 'PHONE']];
-    if (lb.online) tabs.push(['world', 'WORLD']);
-    tabs.push(['ranked', 'RANKED']);
+    const tabs = [['device', 'PHONE'], ['world', 'WORLD'], ['ranked', 'RANKED']];
     const tab = tabs.some(([id]) => id === v.tab) ? v.tab : 'device';
     const tw = (W - 44 - 10 * (tabs.length - 1)) / tabs.length;
     tabs.forEach(([id, label], i) => {
@@ -3157,7 +3155,7 @@ const __mod_ui = (() => {
     let rows;
     let status = 'ok';
     let caption = '';
-    if (tab === 'world') { rows = v.online.rows; status = v.online.status; caption = 'everybody, all time'; }
+    if (tab === 'world') { rows = v.online.rows; status = lb.online ? v.online.status : 'off'; caption = 'everybody, all time'; }
     else if (tab === 'ranked') {
       const rb = game.rankedBoard;
       if (rb.online) { rows = v.ranked.rows; status = v.ranked.status; caption = `season ${rb.season}  ·  one row per name`; }
@@ -3167,7 +3165,12 @@ const __mod_ui = (() => {
 
     const y0 = 170;
     const step = 40;
-    if (status === 'loading' || status === 'idle') {
+    if (status === 'off') {
+      drawText(ctx, 'WORLD BOARD NOT CONNECTED', W / 2, 270, { size: 17, color: COLORS.hazard });
+      ['Scores are only saved on each phone', 'until the game owner adds a database', 'address (onlineUrl in the settings).', 'See the README: "Turn on the shared boards".'].forEach((l, i) => {
+        drawText(ctx, l, W / 2, 306 + i * 22, { size: 13, color: '#b9c9e6', weight: 'normal' });
+      });
+    } else if (status === 'loading' || status === 'idle') {
       drawText(ctx, 'Loading...', W / 2, 300, { size: 18, color: '#9fb6d8' });
     } else if (status === 'error') {
       drawText(ctx, 'Could not reach the online board.', W / 2, 290, { size: 16, color: COLORS.bad });
