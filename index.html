@@ -376,6 +376,7 @@ const __mod_stages = (() => {
   // Whether an operand is GOOD (raises your score), BAD (lowers it) or DEADLY is worked
   // out by the stage operation, so the same table format works for every stage.
   //
+  // late: true on a table entry = it only starts to appear in the second half of the first loop
   // shooterChance : chance a hostile integer carries a gun (fires -n bullets)
   // shooterVolley : bullets per shot (fan spread)
   // fallSpeed     : [min, max] pixels per second
@@ -422,7 +423,7 @@ const __mod_stages = (() => {
       op: '×',
       name: 'MULTIPLICATION',
       hue: 40,
-      tagline: 'S × x : bigger than 1 grows, fractions under 1 shrink. ×0 and ×negative = DEATH.',
+      tagline: 'CATCH numbers above 1 (×2 doubles you). AVOID fractions under 1 (×½ halves you). ×0 and ×negative = DEATH.',
       spawnInterval: 0.54,
       fallSpeed: [80, 135],
       shooterChance: 0,
@@ -430,7 +431,7 @@ const __mod_stages = (() => {
       obstacles: { interval: [7, 11], wallChance: 0.3 }, // seconds between rocks/walls, share that are walls
       table: [
         { kind: 'int', values: [2, 2, 3], weight: 1.6 },                           // good
-        { kind: 'frac', pairs: [[5, 4], [3, 2], [7, 4], [5, 3]], weight: 1.2 },    // good: improper fraction (> 1)
+        { kind: 'frac', pairs: [[5, 4], [3, 2], [7, 4], [5, 3]], weight: 1.2, late: true },    // good: improper fraction (> 1)
         { kind: 'frac', pairs: [[1, 2], [1, 3], [2, 3], [3, 4]], weight: 2.2 },    // bad: proper fraction (< 1) shrinks you
         { kind: 'int', values: [0], weight: 0.8 },                                 // S × 0 = 0: death
         { kind: 'int', values: [-2, -3], weight: 0.7 },                            // different signs: death
@@ -441,7 +442,7 @@ const __mod_stages = (() => {
       op: '÷',
       name: 'DIVISION & FRACTIONS',
       hue: 340,
-      tagline: 'S ÷ x : fractions under 1 RAISE you, anything over 1 shrinks you. ÷0 = −1 life.',
+      tagline: 'CATCH fractions under 1 (÷½ doubles you). AVOID numbers above 1. ÷0 = −1 life, ÷negative = DEATH.',
       spawnInterval: 0.52,
       fallSpeed: [85, 140],
       shooterChance: 0,
@@ -450,7 +451,7 @@ const __mod_stages = (() => {
       table: [
         { kind: 'frac', pairs: [[1, 2], [1, 3], [1, 4], [2, 3]], weight: 2.6 },    // good: proper fraction, ÷(1/2) doubles you
         { kind: 'int', values: [2, 3, 4], weight: 1.5 },                           // bad: shrinks you
-        { kind: 'frac', pairs: [[5, 4], [3, 2], [7, 3]], weight: 1.1 },            // bad: improper fraction (> 1) shrinks you
+        { kind: 'frac', pairs: [[5, 4], [3, 2], [7, 3]], weight: 1.1, late: true },            // bad: improper fraction (> 1) shrinks you
         { kind: 'int', values: [0], weight: 0.8 },                                 // ÷0 is undefined: −1 life
         { kind: 'int', values: [-2, -3], weight: 0.7 },                            // different signs: death
       ],
@@ -1273,7 +1274,15 @@ const __mod_entities = (() => {
 
     draw(ctx) {
       const good = this.role === 'good';
-      const color = this.flash > 0 ? '#ffffff' : good ? COLORS.good : COLORS.bad;
+      // A sign always keeps ITS OWN color (+ cyan, − pink) in every stage, so it never changes meaning's look.
+      // Shape still tells good (circle) from bad (diamond).
+      let base;
+      if (this.signOnly) base = this.value > 0 ? COLORS.cyan : COLORS.pink;
+      else if (this.op === '×' || this.op === '÷') {
+        // x and / stages: color says WHAT the number is (shape says catch / avoid)
+        base = this.kind === 'frac' ? COLORS.violet : this.value === 0 ? '#ffffff' : this.value > 0 ? COLORS.cyan : COLORS.pink;
+      } else base = good ? COLORS.good : COLORS.bad;
+      const color = this.flash > 0 ? '#ffffff' : base;
       ctx.save();
       ctx.translate(this.x, this.y);
 
@@ -1854,7 +1863,8 @@ const __mod_spawner = (() => {
         if (this.timer <= 0) {
           const interval = (stage.spawnInterval / ctx.difficulty) * (1 - 0.35 * ctx.intensity);
           this.timer = interval * (0.7 + 0.6 * this.rng());
-          tokens.push(this._makeToken(this._pick(stage.table), stage, ctx.difficulty, ctx.playerX));
+          const open = stage.table.filter((e) => !e.late || ctx.intensity >= 0.5 || ctx.difficulty > 1);
+          tokens.push(this._makeToken(this._pick(open), stage, ctx.difficulty, ctx.playerX));
         }
       }
 
@@ -2910,7 +2920,8 @@ const __mod_ui = (() => {
     drawText(ctx, `STAGE ${stage.id}${loop > 0 ? `  ·  LOOP ${loop + 1}` : ''}`, W / 2, H / 2 - 80, { size: 16, color: '#9fb6d8' });
     drawText(ctx, stage.op, W / 2, H / 2 - 20, { size: 90, color: `hsl(${stage.hue},95%,65%)`, glow: 26 });
     drawText(ctx, stage.name, W / 2, H / 2 + 40, { size: 24, color: '#ffffff', glow: 10 });
-    drawText(ctx, stage.tagline, W / 2, H / 2 + 72, { size: 13, color: '#b9c9e6' });
+    // the tip can be long: one sentence per line
+    stage.tagline.split(/(?<=[.!])\s+/).forEach((line, i) => drawText(ctx, line, W / 2, H / 2 + 72 + i * 20, { size: 13, color: '#b9c9e6' }));
     ctx.globalAlpha = 1;
   }
 
