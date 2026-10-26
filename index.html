@@ -222,7 +222,10 @@ const __mod_config = (() => {
     },
 
     // --- Bosses, gates, formations, combos -------------------------------------------
-    bossTimeout: 55,          // seconds before a boss gives up and leaves (no reward)
+    zeroHp: 8,                // shots needed to destroy a 0 in the x and / stages (it is the killer)
+    deadlyHp: 4,              // ...and a negative number in those stages
+    bossHpScale: 2.2,         // multiplies every boss's health
+    bossTimeout: 70,          // seconds before a boss gives up and leaves (no reward)
     bombBossDamage: 8,        // a Prime Bomb hurts a boss this much
     combo: { window: 2.2, milestone: 5, bonus: 4, maxBonus: 30 }, // chain kills/pickups within `window` secs
     graze: { margin: 15, reward: 2, cooldown: 0.18 },             // near-miss "CLOSE CALL" bonus
@@ -258,7 +261,8 @@ const __mod_config = (() => {
     invulnSecs: 2,            // after losing a life you cannot lose another for this long
     scoreZeroCostsLife: false,// true: score hitting 0 costs a life and refills half your
                               //       starting score, instead of ending the run at once
-    lifePickupInterval: [30, 45], // seconds between heart drops (only when below max lives)
+    lifePickups: false,       // true = hearts drop and the EXTRA LIFE card exists. Off: lives never come back
+    lifePickupInterval: [55, 80], // seconds between heart drops (only when below max lives)
     obstacles: {
       meteorRadius: 24,
       wallHeight: 22,
@@ -395,7 +399,7 @@ const __mod_stages = (() => {
       fallSpeed: [70, 120],
       shooterChance: 0.12,
       shooterVolley: 1,
-      obstacles: { interval: [9, 13], wallChance: 0 }, // seconds between rocks/walls, share that are walls
+      obstacles: { interval: [6, 9], wallChance: 0.1 }, // seconds between rocks/walls, share that are walls
       table: [
         { kind: 'int', values: [5], weight: 5 },     // shown as just "+": catch it
         { kind: 'int', values: [-5], weight: 3.5 },  // shown as just "−": avoid it
@@ -412,7 +416,7 @@ const __mod_stages = (() => {
       fallSpeed: [75, 125],
       shooterChance: 0.55,
       shooterVolley: 3,
-      obstacles: { interval: [8, 12], wallChance: 0.2 }, // seconds between rocks/walls, share that are walls
+      obstacles: { interval: [5.5, 8], wallChance: 0.3 }, // seconds between rocks/walls, share that are walls
       table: [
         { kind: 'int', values: [-5], weight: 3 },   // shown as just "−": S − (−5) = S + 5, catch it
         { kind: 'int', values: [5], weight: 4 },    // shown as just "+": S − 5, avoid it
@@ -428,7 +432,7 @@ const __mod_stages = (() => {
       fallSpeed: [80, 135],
       shooterChance: 0,
       shooterVolley: 1,
-      obstacles: { interval: [7, 11], wallChance: 0.3 }, // seconds between rocks/walls, share that are walls
+      obstacles: { interval: [4.5, 7], wallChance: 0.4 }, // seconds between rocks/walls, share that are walls
       table: [
         { kind: 'int', values: [2, 2, 3], weight: 1.6 },                           // good
         { kind: 'frac', pairs: [[5, 4], [3, 2], [7, 4], [5, 3]], weight: 1.2, late: true },    // good: improper fraction (> 1)
@@ -447,7 +451,7 @@ const __mod_stages = (() => {
       fallSpeed: [85, 140],
       shooterChance: 0,
       shooterVolley: 2,
-      obstacles: { interval: [6.5, 10], wallChance: 0.35 }, // seconds between rocks/walls, share that are walls
+      obstacles: { interval: [4, 6.5], wallChance: 0.45 }, // seconds between rocks/walls, share that are walls
       table: [
         { kind: 'frac', pairs: [[1, 2], [1, 3], [1, 4], [2, 3]], weight: 2.6 },    // good: proper fraction, ÷(1/2) doubles you
         { kind: 'int', values: [2, 3, 4], weight: 1.5 },                           // bad: shrinks you
@@ -860,7 +864,6 @@ const __mod_upgrades = (() => {
     { id: 'graze',  icon: '⚡', name: 'DAREDEVIL',    desc: 'CLOSE CALL bonus is doubled.',        max: 2, apply: (m) => { m.graze *= 2; } },
     { id: 'bombs',  icon: '◉', name: 'BOMB CACHE',   desc: `Refill Prime Bombs to ${CONFIG.maxBombs}.`, max: 99, instant: 'bombs' },
     { id: 'repair', icon: '+', name: 'REPAIR',       desc: 'Gain 40 score right now.',            max: 99, instant: 'repair' },
-    { id: 'heart',  icon: '♥', name: 'EXTRA LIFE',   desc: '+1 life (or +60 score if full).',     max: 99, instant: 'heart' },
   ];
 
   const upgradeById = (id) => UPGRADES.find((u) => u.id === id);
@@ -1878,12 +1881,16 @@ const __mod_spawner = (() => {
       }
 
       // --- obstacles: orange rocks and walls that cost a life ------------------
-      if (stage.obstacles && !hold) {
+      // (rocks keep falling during a boss fight too, a bit less often and never walls)
+      if (stage.obstacles) {
         this.obstacleTimer -= dt;
         if (this.obstacleTimer <= 0) {
           const [lo, hi] = stage.obstacles.interval;
-          this.obstacleTimer = (lo + (hi - lo) * this.rng()) / ctx.difficulty;
-          obstacles.push(this._makeObstacle(stage, ctx));
+          this.obstacleTimer = ((lo + (hi - lo) * this.rng()) / ctx.difficulty) * (hold ? 1.4 : 1);
+          const ob = this._makeObstacle(stage, ctx, hold);
+          obstacles.push(ob);
+          // from stage 3 on, rocks sometimes come in pairs
+          if (ob.kind === 'meteor' && stage.id >= 3 && this.rng() < 0.35) obstacles.push(this._makeObstacle(stage, ctx, true));
         }
       }
 
@@ -1909,7 +1916,7 @@ const __mod_spawner = (() => {
       this.lifeTimer -= dt;
       if (this.lifeTimer <= 0) {
         this.lifeTimer = this._nextLifeTime();
-        if ((ctx.lives ?? CONFIG.maxLives) < CONFIG.maxLives) {
+        if (CONFIG.lifePickups && (ctx.lives ?? CONFIG.maxLives) < CONFIG.maxLives) {
           powerups.push(new PowerUp('life', 40 + this.rng() * (W - 80)));
         }
       }
@@ -1973,11 +1980,11 @@ const __mod_spawner = (() => {
       }
     }
 
-    _makeObstacle(stage, ctx) {
+    _makeObstacle(stage, ctx, meteorOnly = false) {
       const r = (a, b) => a + (b - a) * this.rng();
       const speedUp = 0.9 + 0.1 * ctx.difficulty;
 
-      if (this.rng() < (stage.obstacles.wallChance || 0)) {
+      if (!meteorOnly && this.rng() < (stage.obstacles.wallChance || 0)) {
         const gapW = CONFIG.obstacles.wallGap;
         const margin = gapW / 2 + 15;
         return new Obstacle({ kind: 'wall', gapX: r(margin, W - margin), gapW, vy: r(80, 100) * speedUp });
@@ -2049,7 +2056,12 @@ const __mod_spawner = (() => {
       const hostile = effect !== 'up';
 
       // Hostile numbers take more hits to destroy (bigger / deadlier = tougher).
-      if (hostile) spec.hp = additive ? 1 + Math.floor(Math.abs(x) / 4) : 2;
+      if (hostile) {
+        if (additive) spec.hp = 1 + Math.floor(Math.abs(x) / 4);
+        else if (effect === 'kill' || effect === 'life') spec.hp = x === 0 ? CONFIG.zeroHp : CONFIG.deadlyHp; // zeros are TOUGH
+        else spec.hp = 2;
+        spec.hp = Math.max(1, Math.round(spec.hp * (1 + 0.25 * (difficulty - 1))));
+      }
 
       // Hostile numbers sometimes spawn right above the player, so parking in one
       // spot is not a winning strategy.
@@ -2117,6 +2129,29 @@ const __mod_leaderboard = (() => {
   function normalizeUrl(u) {
     const s = String(u ?? '').trim().replace(/\.json$/i, '').replace(/\/+$/, '');
     return /^https:\/\/[^\s]+$/i.test(s) ? s : '';
+  }
+
+  /** A Google Apps Script web app address (the Google Sheet database) looks like https://script.google.com/macros/s/.../exec */
+  const isSheetUrl = (u) => /^https:\/\/script\.google\.com\//i.test(u);
+
+  /** Send one row to the Google Sheet. text/plain avoids a browser "preflight" check that Apps Script cannot answer. */
+  async function sheetPost(fetchFn, url, payload) {
+    const res = await fetchFn(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      redirect: 'follow',
+    });
+    return Boolean(res && res.ok);
+  }
+
+  /** Ask the Google Sheet for the best rows. Resolves an array, or null if unreachable. */
+  async function sheetGet(fetchFn, url, params) {
+    const res = await fetchFn(`${url}?${new URLSearchParams(params).toString()}`);
+    if (!res || !res.ok) return null;
+    const data = await res.json();
+    const list = Array.isArray(data) ? data : Array.isArray(data?.rows) ? data.rows : null;
+    return list;
   }
 
   function safeStorage() {
@@ -2209,6 +2244,7 @@ const __mod_leaderboard = (() => {
       if (!this.online) return false;
       const body = JSON.stringify(tidy(entry));
       try {
+        if (isSheetUrl(this.onlineUrl)) return await sheetPost(this.fetchFn, this.onlineUrl, { mode: 'classic', ...tidy(entry) });
         const res = await this.fetchFn(`${this.onlineUrl}/scores.json`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -2224,6 +2260,10 @@ const __mod_leaderboard = (() => {
     async fetchOnline() {
       if (!this.online) return null;
       try {
+        if (isSheetUrl(this.onlineUrl)) {
+          const list = await sheetGet(this.fetchFn, this.onlineUrl, { mode: 'classic', limit: this.size });
+          return list ? list.filter(isRow).map(tidy).sort(byScoreDesc).slice(0, this.size) : null;
+        }
         // Firebase REST: ask for the highest `score` values (needs ".indexOn": "score")
         const query = `orderBy=${encodeURIComponent('"score"')}&limitToLast=${this.size}`;
         const res = await this.fetchFn(`${this.onlineUrl}/scores.json?${query}`);
@@ -2236,7 +2276,7 @@ const __mod_leaderboard = (() => {
       }
     }
   }
-  return { cleanName, normalizeUrl, Leaderboard };
+  return { cleanName, normalizeUrl, isSheetUrl, sheetPost, sheetGet, Leaderboard };
 })();
 
 /* ======================= FILE: ranked.js ======================= */
@@ -2253,7 +2293,7 @@ const __mod_ranked = (() => {
 
   const { CONFIG } = __mod_config;
   const { hash53 } = __mod_rng;
-  const { cleanName, normalizeUrl } = __mod_leaderboard;
+  const { cleanName, normalizeUrl, isSheetUrl, sheetPost, sheetGet } = __mod_leaderboard;
 
   /** '2026-W43' for the ISO week containing `date`. */
   function seasonId(date = new Date()) {
@@ -2371,6 +2411,7 @@ const __mod_ranked = (() => {
     async submitOnline(row) {
       if (!this.online) return false;
       try {
+        if (isSheetUrl(this.onlineUrl)) return await sheetPost(this.fetchFn, this.onlineUrl, { mode: 'ranked', season: this.season, ...tidy(row) });
         const res = await this.fetchFn(`${this.onlineUrl}/ranked/${this.season}.json`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tidy(row)),
         });
@@ -2382,6 +2423,16 @@ const __mod_ranked = (() => {
     async fetchOnline() {
       if (!this.online) return null;
       try {
+        if (isSheetUrl(this.onlineUrl)) {
+          const list = await sheetGet(this.fetchFn, this.onlineUrl, { mode: 'ranked', season: this.season, limit: this.size * 4 });
+          if (!list) return null;
+          const best = new Map();
+          for (const r of list.filter(isRow).map(tidy).sort(byScore)) {
+            const k = nameKey(r.name);
+            if (!best.has(k)) best.set(k, { key: k, ...r });
+          }
+          return [...best.values()].slice(0, this.size);
+        }
         const q = `orderBy=${encodeURIComponent('"score"')}&limitToLast=${this.size * 4}`;
         const res = await this.fetchFn(`${this.onlineUrl}/ranked/${this.season}.json?${q}`);
         if (!res || !res.ok) return null;
@@ -2463,6 +2514,7 @@ const __mod_boss = (() => {
   /**
    * Attack types:
    *   fan    n bullets aimed at the player        { n, spread }
+   *   (phase 2 under half health adds the phase2 attacks, phase 3 under ~22% is a faster RAGE)
    *   ring   n bullets in all directions          { n }
    *   spiral a rotating stream for `dur` seconds  { dur }
    *   rain   n bullets dropping from the top      { n }
@@ -2471,22 +2523,22 @@ const __mod_boss = (() => {
   const BOSSES = [
     {
       name: 'THE SUM', glyph: 'Σ', hue: 200, hp: 45, value: 3, reward: 80,
-      attacks: [{ type: 'fan', every: 2.0, n: 3, spread: 0.3 }],
+      attacks: [{ type: 'fan', every: 1.7, n: 4, spread: 0.28 }, { type: 'rain', every: 4.2, n: 4 }],
       phase2: [{ type: 'ring', every: 3.4, n: 10 }],
     },
     {
       name: 'THE DIFFERENCE', glyph: '−', hue: 285, hp: 65, value: 4, reward: 120,
-      attacks: [{ type: 'fan', every: 1.9, n: 5, spread: 0.24 }],
+      attacks: [{ type: 'fan', every: 1.6, n: 5, spread: 0.24 }, { type: 'rain', every: 3.8, n: 5 }],
       phase2: [{ type: 'spiral', every: 5.5, dur: 2.2 }],
     },
     {
       name: 'THE PRODUCT', glyph: '×', hue: 40, hp: 90, value: 4, reward: 160,
-      attacks: [{ type: 'summon', every: 3.8, n: 2, kind: 'zero' }, { type: 'fan', every: 2.2, n: 3, spread: 0.3 }],
+      attacks: [{ type: 'summon', every: 3.6, n: 2, kind: 'zero' }, { type: 'fan', every: 1.8, n: 5, spread: 0.26 }],
       phase2: [{ type: 'ring', every: 3.2, n: 12 }],
     },
     {
       name: 'THE QUOTIENT', glyph: '÷', hue: 340, hp: 120, value: 5, reward: 220,
-      attacks: [{ type: 'fan', every: 2.0, n: 5, spread: 0.22 }, { type: 'rain', every: 3.0, n: 6 }],
+      attacks: [{ type: 'fan', every: 1.6, n: 6, spread: 0.2 }, { type: 'rain', every: 2.6, n: 7 }],
       phase2: [{ type: 'spiral', every: 6, dur: 2.4 }, { type: 'ring', every: 4, n: 14 }],
     },
   ];
@@ -2500,9 +2552,9 @@ const __mod_boss = (() => {
       this.def = def;
       this.rng = o.rng || Math.random;
       const diff = o.difficulty || 1;
-      this.maxHp = Math.round(def.hp * (1 + 0.3 * (diff - 1)));
+      this.maxHp = Math.round(def.hp * CONFIG.bossHpScale * (1 + 0.3 * (diff - 1)));
       this.hp = this.maxHp;
-      this.value = def.value + Math.floor((o.stagesCleared || 0) / 2);
+      this.value = def.value + 2 + Math.floor((o.stagesCleared || 0) / 2);
       this.speedMul = 1 + 0.12 * (diff - 1);
       this.x = W / 2;
       this.y = -90;
@@ -2530,6 +2582,7 @@ const __mod_boss = (() => {
       this.flash = 0.07;
       if (this.hp <= 0) { this.hp = 0; this.dead = true; return true; }
       if (this.phase === 1 && this.hp <= this.maxHp * 0.5) this.phase = 2;
+      if (this.phase === 2 && this.hp <= this.maxHp * 0.22) this.phase = 3; // RAGE: faster, everything at once
       return false;
     }
 
@@ -2546,12 +2599,15 @@ const __mod_boss = (() => {
       }
       this.fightTime += dt;
       const amp = Math.min(150, W / 2 - this.radius - 10);
-      this.x = W / 2 + Math.sin(this.t * 0.9 * this.speedMul) * amp;
-      this.y = this.homeY + Math.sin(this.t * 1.7) * 14;
+      // Motion is measured from the moment the fight starts and eases in, so there is no jump:
+      // the boss stops at the centre and then smoothly starts to sweep left and right.
+      const ease = clamp(this.fightTime / 1.2, 0, 1);
+      this.x = W / 2 + Math.sin(this.fightTime * 0.9 * this.speedMul) * amp * ease;
+      this.y = this.homeY + Math.sin(this.fightTime * 1.7) * 14 * ease;
 
-      const rate = (this.phase === 2 ? 1.25 : 1) * this.speedMul;
+      const rate = (this.phase === 3 ? 1.7 : this.phase === 2 ? 1.3 : 1.1) * this.speedMul;
       this.def.attacks.forEach((a, i) => { this.timers[i] -= dt * rate; if (this.timers[i] <= 0) { this.timers[i] = a.every; this._fire(a, player, actions); } });
-      if (this.phase === 2) {
+      if (this.phase >= 2) {
         this.def.phase2.forEach((a, i) => { this.timers2[i] -= dt * rate; if (this.timers2[i] <= 0) { this.timers2[i] = a.every; this._fire(a, player, actions); } });
       }
 
@@ -2576,7 +2632,7 @@ const __mod_boss = (() => {
     }
 
     _fire(a, player, actions) {
-      const speed = 165 * (0.9 + 0.1 * this.speedMul);
+      const speed = 185 * (0.9 + 0.1 * this.speedMul);
       switch (a.type) {
         case 'fan': {
           const aim = Math.atan2(player.x - this.x, player.y - this.y);
@@ -2629,7 +2685,7 @@ const __mod_boss = (() => {
       ctx.beginPath();
       for (let i = 0; i < 6; i++) {
         const a = (i / 6) * TAU + this.t * 0.4;
-        const r = this.radius + (this.phase === 2 ? 4 * Math.sin(this.t * 9) : 0);
+        const r = this.radius + (this.phase >= 2 ? (this.phase === 3 ? 7 : 4) * Math.sin(this.t * 9) : 0);
         i ? ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r) : ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
       }
       ctx.closePath();
@@ -2946,7 +3002,7 @@ const __mod_ui = (() => {
     game.menuButtons.push({ id: 'mute', ...mu });
 
     // Mode switch: CLASSIC | RANKED
-    [['mode-classic', 'CLASSIC', W / 2 - 160, '#4dd2ff'], ['mode-ranked', 'RANKED', W / 2 + 5, '#ffd75e']].forEach(([id, label, x, col]) => {
+    [['mode-ranked', 'RANKED', W / 2 - 160, '#ffd75e'], ['mode-classic', 'CLASSIC', W / 2 + 5, '#4dd2ff']].forEach(([id, label, x, col]) => {
       const active = (id === 'mode-ranked') === ranked;
       const rect = { x, y: 152, w: 155, h: 36 };
       ctx.fillStyle = active ? 'rgba(255,255,255,0.12)' : 'rgba(10,20,44,0.7)';
@@ -3012,7 +3068,8 @@ const __mod_ui = (() => {
     drawText(ctx, 'TAP A PILOT TO START', W / 2, 552, { size: 14, color: '#ffffff', glow: 8 });
     ctx.globalAlpha = 1;
 
-    game.menuButtons.push({ id: 'board', ...drawButton(ctx, { x: W / 2 - 105, y: 566, w: 210, h: 40 }, 'LEADERBOARD', COLORS.gold) });
+    game.menuButtons.push({ id: 'howto', ...drawButton(ctx, { x: W / 2 - 200, y: 566, w: 195, h: 40 }, 'HOW TO PLAY', COLORS.good) });
+    game.menuButtons.push({ id: 'board', ...drawButton(ctx, { x: W / 2 + 5, y: 566, w: 195, h: 40 }, 'LEADERBOARD', COLORS.gold) });
 
     drawText(ctx, 'DRAG to fly  ·  auto-fire  ·  BOMB = Prime Bomb', W / 2, 630, { size: 12, color: '#b9c9e6', weight: 'normal' });
     drawText(ctx, `Rocks, walls and wrong gates cost a LIFE (you have ${CONFIG.maxLives}).`, W / 2, 650, { size: 12, color: COLORS.hazard, weight: 'normal' });
@@ -3020,6 +3077,109 @@ const __mod_ui = (() => {
     if (game.highScore > 0) {
       drawText(ctx, `BEST  ${game.highScore}`, W / 2, 698, { size: 12, color: '#8fb3d9' });
     }
+  }
+
+
+  // -----------------------------------------------------------------------------
+  // HOW TO PLAY (5 pages, tap NEXT)
+  // -----------------------------------------------------------------------------
+  const HOW_PAGES = [
+    {
+      title: 'THE GOAL',
+      items: [
+        ['Your SCORE is your HEALTH', COLORS.gold, ['Touch numbers to change your score.', 'If it reaches 0 or below, you are deleted.']],
+        ['DRAG to fly', COLORS.cyan, ['Move your finger anywhere on the screen.', 'Your ship fires by itself while you touch.']],
+        ['3 LIVES', COLORS.heart, ['Orange rocks, striped walls and wrong gates', 'cost a life. Lives do NOT come back!']],
+        ['BUTTONS', '#ffffff', ['BOMB (bottom left) = Prime Bomb.', 'II (top right) = pause, restart or go home.']],
+      ],
+      demo: 'shapes',
+    },
+    {
+      title: 'THE 4 STAGES',
+      items: [
+        ['+  ADDITION', COLORS.cyan, ['Catch the + signs.  Avoid the − signs.']],
+        ['−  SUBTRACTION', COLORS.pink, ['Catch the − signs (minus a minus is a plus).', 'Avoid the + signs.']],
+        ['×  MULTIPLICATION', COLORS.gold, ['Catch numbers above 1 (×2 doubles you).', 'Avoid fractions under 1 (×½ halves you).', '×0 and ×negative = DEATH.']],
+        ['÷  DIVISION', COLORS.violet, ['Catch fractions under 1 (÷½ doubles you).', 'Avoid numbers above 1 (÷3 cuts you to a third).', '÷0 costs a life. ÷negative = DEATH.']],
+      ],
+    },
+    {
+      title: 'SHAPES AND COLORS',
+      items: [
+        ['CIRCLE = CATCH IT', COLORS.good, ['Fly into it. It raises your score.']],
+        ['DIAMOND = AVOID IT', COLORS.bad, ['It lowers your score. Shoot it or dodge it.']],
+        ['DOUBLE OUTLINE = DEADLY', '#ffffff', ['×0, ÷0 and negatives in × and ÷ stages.']],
+        ['COLORS NEVER CHANGE', COLORS.cyan, ['Cyan = plus / positive.   Pink = minus / negative.', 'Violet = fraction.   White = zero.']],
+        ['ORANGE = ROCK OR WALL', COLORS.hazard, ['Cannot be shot. Costs a life. Fly through the gap.']],
+      ],
+    },
+    {
+      title: 'POWER-UPS',
+      items: [
+        ['|x|  ABSOLUTE SHIELD', '#7df9ff', ['Uses the better sign of a number. Zero is cancelled.']],
+        ['π  PI MAGNET', COLORS.gold, ['Pulls every pickup toward you.']],
+        ['x²  EXPONENT', '#c79bff', ['Squares the good numbers you catch.']],
+        ['Δt  SLOW TIME', '#8fb3ff', ['The whole game slows down for a while.']],
+        ['PRIME BOMB', COLORS.good, ['Destroys hostile signs and non-prime numbers.', 'Prime numbers (2, 3, 5, 7...) survive it.']],
+      ],
+    },
+    {
+      title: 'BOSSES AND BONUSES',
+      items: [
+        ['BOSS', COLORS.bad, ['Every 45 seconds a giant number arrives.', 'Shoot it down to 0. Then pick 1 of 3 upgrades.']],
+        ['MAKE N GATES', COLORS.good, ['Fly through the box whose answer equals N.', 'Right = bonus and a power-up. Wrong = lose a life.']],
+        ['COMBO AND CLOSE CALL', COLORS.gold, ['Chain hits quickly for bonus points.', 'Skim past danger without touching it for more.']],
+        ['RANKED', COLORS.pink, ['Same enemies for everyone all week.', 'Climb the tiers and get on the world board.']],
+      ],
+    },
+  ];
+  const HOW_PAGE_COUNT = HOW_PAGES.length;
+
+  function drawHowTo(ctx, game) {
+    const pg = clamp(game.howPage || 0, 0, HOW_PAGES.length - 1);
+    const page = HOW_PAGES[pg];
+    game.howButtons = [];
+    drawText(ctx, 'HOW TO PLAY', W / 2, 36, { size: 13, color: '#8fb3d9' });
+    drawText(ctx, page.title, W / 2, 72, { size: 28, color: COLORS.gold, glow: 14 });
+
+    let y = 116;
+    for (const [head, color, lines] of page.items) {
+      drawText(ctx, head, 28, y, { size: 16, align: 'left', color, glow: 6 });
+      y += 22;
+      for (const line of lines) {
+        drawText(ctx, line, 28, y, { size: 13, align: 'left', color: '#d3e0f5', weight: 'normal' });
+        y += 18;
+      }
+      y += 14;
+    }
+
+    if (page.demo === 'shapes') {
+      // little examples: a circle to catch and a diamond to avoid
+      const dy = Math.max(y + 24, 520);
+      ctx.lineWidth = 2.5;
+      ctx.fillStyle = 'rgba(6,14,30,0.85)';
+      ctx.strokeStyle = COLORS.cyan; ctx.shadowColor = COLORS.cyan; ctx.shadowBlur = 12;
+      ctx.beginPath(); ctx.arc(W / 2 - 90, dy, 20, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      drawText(ctx, '+', W / 2 - 90, dy + 1, { size: 30, color: COLORS.cyan });
+      ctx.fillStyle = 'rgba(6,14,30,0.85)';
+      ctx.strokeStyle = COLORS.pink; ctx.shadowColor = COLORS.pink; ctx.shadowBlur = 12;
+      ctx.beginPath(); ctx.moveTo(W / 2 + 90, dy - 26); ctx.lineTo(W / 2 + 116, dy); ctx.lineTo(W / 2 + 90, dy + 26); ctx.lineTo(W / 2 + 64, dy); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.shadowBlur = 0;
+      drawText(ctx, '−', W / 2 + 90, dy + 1, { size: 30, color: COLORS.pink });
+      drawText(ctx, 'catch', W / 2 - 90, dy + 44, { size: 13, color: COLORS.good });
+      drawText(ctx, 'avoid', W / 2 + 90, dy + 44, { size: 13, color: COLORS.bad });
+    }
+
+    // page dots
+    for (let i = 0; i < HOW_PAGES.length; i++) {
+      ctx.fillStyle = i === pg ? COLORS.gold : 'rgba(255,255,255,0.25)';
+      ctx.beginPath(); ctx.arc(W / 2 - (HOW_PAGES.length - 1) * 9 + i * 18, 640, 4, 0, Math.PI * 2); ctx.fill();
+    }
+    const last = pg === HOW_PAGES.length - 1;
+    if (pg > 0) game.howButtons.push({ id: 'how-prev', ...drawButton(ctx, { x: 28, y: 660, w: 130, h: 44 }, 'BACK', '#8fb3d9') });
+    game.howButtons.push({ id: 'how-next', ...drawButton(ctx, { x: W - 28 - 190, y: 660, w: 190, h: 44 }, last ? 'GOT IT!' : 'NEXT', last ? COLORS.good : COLORS.gold) });
+    game.howButtons.push({ id: 'how-skip', x: W - 90, y: 8, w: 82, h: 34 });
+    drawText(ctx, 'SKIP', W - 49, 26, { size: 13, color: '#8fb3d9' });
   }
 
   // -----------------------------------------------------------------------------
@@ -3143,7 +3303,7 @@ const __mod_ui = (() => {
 
     drawText(ctx, 'LEADERBOARD', W / 2, 52, { size: 30, color: COLORS.gold, glow: 16 });
 
-    const tabs = [['world', 'CLASSIC'], ['ranked', 'RANKED']];
+    const tabs = [['ranked', 'RANKED'], ['world', 'CLASSIC']];
     const tab = v.tab === 'ranked' ? 'ranked' : 'world';
     const tw = (W - 44 - 10 * (tabs.length - 1)) / tabs.length;
     tabs.forEach(([id, label], i) => {
@@ -3239,7 +3399,7 @@ const __mod_ui = (() => {
       game.lbButtons.push({ id: 'back', ...drawButton(ctx, { x: W / 2 - 100, y: 606, w: 200, h: 48 }, 'BACK', '#ffffff') });
     }
   }
-  return { drawHUD, drawBanner, drawMenu, drawPause, drawUpgrade, drawGameOver, drawLeaderboard };
+  return { drawHUD, drawBanner, drawMenu, HOW_PAGE_COUNT, drawHowTo, drawPause, drawUpgrade, drawGameOver, drawLeaderboard };
 })();
 
 /* ======================= FILE: game.js ======================= */
@@ -3274,7 +3434,7 @@ const __mod_game = (() => {
   const { mulberry32 } = __mod_rng;
   const { drawText } = __mod_draw;
   const { Leaderboard, cleanName } = __mod_leaderboard;
-  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade } = __mod_ui;
+  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, HOW_PAGE_COUNT } = __mod_ui;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -3307,7 +3467,7 @@ const __mod_game = (() => {
       this.rankedBoard = options.rankedBoard || new RankedBoard({ onlineUrl: CONFIG.leaderboard.onlineUrl });
       this.askName = options.askName || null; // main.js shows the "enter your name" box
       this.music = options.music || null;
-      this.mode = 'classic';
+      this.mode = 'ranked';   // RANKED is the default mode
       this.lbView = { tab: 'device', from: 'menu', highlight: null, online: { status: 'idle', rows: [] }, ranked: { status: 'idle', rows: [] } };
       this.lbButtons = []; // tap targets, filled in while drawing each screen
       this.menuButtons = [];
@@ -3433,7 +3593,7 @@ const __mod_game = (() => {
       // everything hostile pops (no kill rewards), enemy bullets vanish
       for (const t of this.tokens) if (t.role === 'bad' && !t.dead) { t.dead = true; this.explode(t.x, t.y, COLORS.bad, 0.7); }
       for (const q of this.bullets) if (q.owner === 'enemy') q.dead = true;
-      if (this.lives < CONFIG.maxLives) this.powerups.push(new PowerUp('life', b.x));
+      if (CONFIG.lifePickups && this.lives < CONFIG.maxLives) this.powerups.push(new PowerUp('life', b.x));
       this.shake = 1;
       this.flash = { color: 'rgba(255,255,255,0.55)', t: 0.4 };
       this.triggerSlowmo(0.7, 0.3);
@@ -3556,6 +3716,10 @@ const __mod_game = (() => {
             else if (this.input.wasPressed('back')) this._setState('menu');
           }
           break;
+        case 'howto':
+          if (this.input.wasPressed('confirm')) this.howNext();
+          else if (this.input.wasPressed('back')) this.closeHowTo();
+          break;
         case 'leaderboard':
           if (this.input.wasPressed('back') || this.input.wasPressed('confirm')) this.closeLeaderboard();
           break;
@@ -3568,7 +3732,7 @@ const __mod_game = (() => {
     _syncMusic() {
       if (!this.music) return;
       let theme = null;
-      if (this.state === 'menu' || this.state === 'leaderboard') theme = 'menu';
+      if (this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto') theme = 'menu';
       else if (this.state === 'playing' || this.state === 'paused' || this.state === 'upgrade') {
         theme = this.phase === 'boss' ? 'boss' : `s${this.stageIndex % STAGES.length}`;
       }
@@ -3587,7 +3751,38 @@ const __mod_game = (() => {
     /** Start a run from the menu in the selected mode. */
     beginFromMenu(i) {
       this.menuIndex = i;
+      // First time ever: show HOW TO PLAY before the run starts
+      if (!this._howSeen()) { this.openHowTo(i); return; }
       this.startRun(CHARACTERS[i].id, this.mode);
+    }
+
+    _howSeen() {
+      try {
+        const st = globalThis.localStorage;
+        if (!st) return true; // no storage (tests, private mode): never nag
+        return st.getItem('mathStriker.howto.v1') === '1';
+      } catch { return true; }
+    }
+
+    /** Open the tutorial. `startIndex` = pilot to start with when it ends (first-time flow), else null. */
+    openHowTo(startIndex = null) {
+      this.howPage = 0;
+      this.howStart = startIndex;
+      this._setState('howto');
+    }
+
+    closeHowTo() {
+      try { globalThis.localStorage?.setItem('mathStriker.howto.v1', '1'); } catch { /* private mode */ }
+      const i = this.howStart;
+      this.howStart = null;
+      this._setState('menu');
+      this.stateTime = 1;
+      if (i !== null && i !== undefined) this.startRun(CHARACTERS[i].id, this.mode);
+    }
+
+    howNext() {
+      if (this.howPage >= HOW_PAGE_COUNT - 1) this.closeHowTo();
+      else this.howPage += 1;
     }
 
     /**
@@ -3604,6 +3799,7 @@ const __mod_game = (() => {
         case 'menu': {
           const btn = buttonAt(this.menuButtons);
           if (btn?.id === 'board') { this.openLeaderboard('menu'); return true; }
+          if (btn?.id === 'howto') { this.openHowTo(null); return true; }
           if (btn?.id === 'mode-classic') { this.mode = 'classic'; return true; }
           if (btn?.id === 'mode-ranked') { this.mode = 'ranked'; return true; }
           if (btn?.id === 'mute') { this.sfx.toggleMute(); return true; }
@@ -3637,6 +3833,13 @@ const __mod_game = (() => {
           if (btn?.id === 'again') this.startRun(this.character.id);
           else if (btn?.id === 'board') this.openLeaderboard('gameover', this.lastRow);
           else if (btn?.id === 'menu') this._setState('menu');
+          return true;
+        }
+        case 'howto': {
+          const btn = buttonAt(this.howButtons || []);
+          if (btn?.id === 'how-prev') this.howPage = Math.max(0, this.howPage - 1);
+          else if (btn?.id === 'how-skip') this.closeHowTo();
+          else this.howNext();
           return true;
         }
         case 'leaderboard': {
@@ -3790,7 +3993,7 @@ const __mod_game = (() => {
           }
         } else if (act.type === 'summon') {
           for (let i = 0; i < act.n; i++) {
-            this.tokens.push(new Token({ kind: 'int', value: 0, op: this.stage.op, x: boss.x + (i - (act.n - 1) / 2) * 56, y: boss.y + 30, vy: 115, hp: 2 }));
+            this.tokens.push(new Token({ kind: 'int', value: 0, op: this.stage.op, x: boss.x + (i - (act.n - 1) / 2) * 56, y: boss.y + 30, vy: 115, hp: Math.ceil(CONFIG.zeroHp / 2) }));
           }
         }
       }
@@ -4271,11 +4474,12 @@ const __mod_game = (() => {
 
       if (this.state === 'menu') drawMenu(ctx, this);
       else if (this.state === 'leaderboard') drawLeaderboard(ctx, this);
+      else if (this.state === 'howto') drawHowTo(ctx, this);
       else this.drawWorld(ctx);
       ctx.restore();
 
       // Full-screen overlays are drawn outside the shake transform.
-      if (this.state !== 'menu' && this.state !== 'leaderboard') {
+      if (this.state !== 'menu' && this.state !== 'leaderboard' && this.state !== 'howto') {
         if (this.flash) {
           ctx.fillStyle = this.flash.color;
           ctx.fillRect(0, 0, W, H);
@@ -4291,7 +4495,7 @@ const __mod_game = (() => {
     }
 
     drawBackground(ctx) {
-      const hue = this.state === 'menu' || this.state === 'leaderboard' ? 215 : this.stage.hue;
+      const hue = this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' ? 215 : this.stage.hue;
       const g = ctx.createLinearGradient(0, 0, 0, H);
       g.addColorStop(0, `hsl(${hue}, 55%, 9%)`);
       g.addColorStop(1, `hsl(${hue + 20}, 60%, 4%)`);
