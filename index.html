@@ -1406,13 +1406,13 @@ const __mod_entities = (() => {
   // PowerUp
   // -----------------------------------------------------------------------------
   const POWERUP_INFO = {
-    abs: { glyph: '|x|', color: '#7df9ff', name: 'ABSOLUTE SHIELD' },
-    pi: { glyph: 'π', color: '#ffd75e', name: 'PI MAGNET' },
-    sq: { glyph: 'x²', color: '#c79bff', name: 'EXPONENT' },
-    slow: { glyph: 'Δt', color: '#8fb3ff', name: 'SLOW TIME' },
-    guard: { glyph: '∞', color: '#5dffb0', name: 'GUARD' },
-    double: { glyph: 'Σ×2', color: '#ffb347', name: 'DOUBLE GAINS' },
-    freeze: { glyph: '‖', color: '#9be7ff', name: 'FREEZE' },
+    abs: { glyph: '|x|', color: '#7df9ff', name: 'ABSOLUTE SHIELD', desc: 'Uses the better sign of a number you touch. A zero does nothing.' },
+    pi: { glyph: 'π', color: '#ffd75e', name: 'PI MAGNET', desc: 'Pulls every good pickup toward you.' },
+    sq: { glyph: 'x²', color: '#c79bff', name: 'EXPONENT', desc: 'Squares the good numbers you catch, so they give more.' },
+    slow: { glyph: 'Δt', color: '#8fb3ff', name: 'SLOW TIME', desc: 'The whole game slows down for a while.' },
+    guard: { glyph: '∞', color: '#5dffb0', name: 'GUARD', desc: 'Blocks the next 3 hits that would hurt you.' },
+    double: { glyph: 'Σ×2', color: '#ffb347', name: 'DOUBLE GAINS', desc: 'Everything that raises your score counts double.' },
+    freeze: { glyph: '‖', color: '#9be7ff', name: 'FREEZE', desc: 'Enemies, their bullets and rocks stop for a few seconds.' },
     life: { glyph: '♥', color: '#ff5d8f', name: 'EXTRA LIFE' }, // instant, not timed
   };
 
@@ -1858,6 +1858,7 @@ const __mod_spawner = (() => {
 
   const W = CONFIG.width;
   const TAU = Math.PI * 2;
+  const STAGES_PER_LOOP = 4;
 
   class Spawner {
     /** @param {() => number} rng  injectable random source (tests pass a seeded one) */
@@ -1868,17 +1869,30 @@ const __mod_spawner = (() => {
 
     reset() {
       this.timer = 0.9;
-      this.powerTimer = this._nextPowerTime();
-      this.obstacleTimer = 7;   // grace period before the first rock or wall
+      this.powerTimer = 20 + this.rng() * 6; // the first power-up of a run comes after about 20 s
+      this.obstacleTimer = 22;  // grace period: no rock or wall in the first ~22 s (learn to move and shoot first)
       this.lifeTimer = this._nextLifeTime();
       this.gateSeq = 0;
       this.onStageStart();
     }
 
-    /** Called at the start of every stage: formations and gates come a little later. */
-    onStageStart() {
-      this.formationTimer = CONFIG.formations.first;
-      this.gateTimer = CONFIG.gates.first;
+    /**
+     * Called at the start of every stage: formations and gates come a little later.
+     * The very first stage of a run is gentle: waves come late and there are no MAKE-N gates yet.
+     */
+    onStageStart(stageIndex = 0) {
+      this.formationTimer = stageIndex === 0 ? CONFIG.formations.first * 3 : CONFIG.formations.first;
+      this.gateTimer = stageIndex === 0 ? Infinity : CONFIG.gates.first;
+    }
+
+    /**
+     * Which power-ups can drop. The first time through the four stages they are
+     * introduced slowly (2, then 4, then 6, then all 7); after that every kind can drop.
+     */
+    powerKinds(stageIndex = 99) {
+      const all = ['abs', 'pi', 'slow', 'guard', 'sq', 'double', 'freeze'];
+      if (stageIndex >= STAGES_PER_LOOP) return all;
+      return all.slice(0, [2, 4, 6, 7][stageIndex]);
     }
 
     _nextLifeTime() {
@@ -1919,7 +1933,7 @@ const __mod_spawner = (() => {
       this.powerTimer -= dt;
       if (this.powerTimer <= 0) {
         this.powerTimer = this._nextPowerTime();
-        const kinds = ['abs', 'pi', 'sq', 'slow', 'guard', 'double', 'freeze'];
+        const kinds = this.powerKinds(ctx.stagesCleared ?? 99);
         const kind = kinds[Math.floor(this.rng() * kinds.length)];
         powerups.push(new PowerUp(kind, 40 + this.rng() * (W - 80)));
       }
@@ -3232,7 +3246,7 @@ const __mod_ui = (() => {
 
     const pulse = 0.65 + 0.35 * Math.sin(game.time * 4);
     ctx.globalAlpha = pulse;
-    drawText(ctx, 'TAP A PILOT TO START', W / 2, 552, { size: 14, color: '#ffffff', glow: 8 });
+    drawText(ctx, game.desktop ? 'CLICK A PILOT  (or ← → and ENTER)' : 'TAP A PILOT TO START', W / 2, 552, { size: 14, color: '#ffffff', glow: 8 });
     ctx.globalAlpha = 1;
 
     game.menuButtons.push({ id: 'howto', ...drawButton(ctx, { x: W / 2 - 200, y: 566, w: 195, h: 40 }, 'HOW TO PLAY', COLORS.good) });
@@ -3248,7 +3262,7 @@ const __mod_ui = (() => {
       game.menuButtons.push({ id: 'install', ...drawButton(ctx, { x: W / 2 + 65, y: 614, w: 135, h: 34 }, 'INSTALL', '#8fb3d9') });
     }
 
-    drawText(ctx, 'DRAG to fly  ·  auto-fire  ·  BOMB = Prime Bomb', W / 2, 668, { size: 12, color: '#b9c9e6', weight: 'normal' });
+    drawText(ctx, game.desktop ? 'ARROWS / WASD fly  ·  auto-fire  ·  B = Prime Bomb  ·  P = pause' : 'DRAG to fly  ·  auto-fire  ·  BOMB = Prime Bomb', W / 2, 668, { size: 12, color: '#b9c9e6', weight: 'normal' });
     drawText(ctx, 'Your SCORE is your health. Beat a boss to level up.', W / 2, 688, { size: 12, color: COLORS.gold, weight: 'normal' });
     if (game.highScore > 0) {
       drawText(ctx, `BEST  ${game.highScore}`, W / 2, 708, { size: 12, color: '#8fb3d9' });
@@ -3270,7 +3284,7 @@ const __mod_ui = (() => {
       title: 'THE GOAL',
       items: [
         ['Your SCORE is your HEALTH', COLORS.gold, ['Touch numbers to change your score.', 'If it reaches 0 or below, you are deleted.']],
-        ['DRAG to fly', COLORS.cyan, ['Move your finger anywhere on the screen.', 'Your ship fires by itself while you touch.']],
+        ['DRAG to fly', COLORS.cyan, ['Move your finger anywhere on the screen.', 'Your ship fires by itself while you touch.', 'On a computer: ARROWS or WASD, B = bomb, P = pause.']],
         ['3 LIVES', COLORS.heart, ['Orange rocks, striped walls and wrong gates', 'cost a life. Lives do NOT come back!']],
         ['BUTTONS', '#ffffff', ['BOMB (bottom left) = Prime Bomb.', 'II (top right) = pause, restart or go home.']],
       ],
@@ -3418,6 +3432,39 @@ const __mod_ui = (() => {
     ];
   }
 
+  // First-time tip: the game is paused behind it
+  function drawTip(ctx, game) {
+    const t = game.tip;
+    if (!t) return;
+    ctx.fillStyle = 'rgba(2,6,16,0.72)';
+    ctx.fillRect(0, 0, W, H);
+    // wrap the text to about 31 characters per line
+    const words = t.text.split(' ');
+    const lines = [];
+    let cur = '';
+    for (const w of words) {
+      if ((cur + ' ' + w).trim().length > 31) { lines.push(cur); cur = w; } else cur = (cur + ' ' + w).trim();
+    }
+    if (cur) lines.push(cur);
+    const h = 120 + lines.length * 22 + 40;
+    const x = 40, w = W - 80, y = Math.round((H - h) / 2) - 30;
+    ctx.fillStyle = '#07142a';
+    ctx.strokeStyle = t.color;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = t.color; ctx.shadowBlur = 22;
+    pathRoundRect(ctx, x, y, w, h, 18);
+    ctx.fill(); ctx.stroke();
+    ctx.shadowBlur = 0;
+    drawText(ctx, 'TIP', W / 2, y + 26, { size: 11, color: '#8fb3d9' });
+    drawText(ctx, t.title, W / 2, y + 60, { size: 24, color: t.color, glow: 12 });
+    lines.forEach((l, i) => drawText(ctx, l, W / 2, y + 100 + i * 22, { size: 14, color: '#e3ecfb', weight: 'normal' }));
+    if (game.stateTime > 0.9) {
+      ctx.globalAlpha = 0.6 + 0.4 * Math.sin(game.time * 5);
+      drawText(ctx, 'TAP TO CONTINUE', W / 2, y + h - 24, { size: 13, color: '#ffffff', glow: 6 });
+      ctx.globalAlpha = 1;
+    }
+  }
+
   // A short message at the bottom of the screen ("LINK COPIED!", "WELCOME, MARIA!")
   function drawToast(ctx, toast) {
     const a = clamp(Math.min(toast.t / 0.3, 1), 0, 1);
@@ -3457,7 +3504,7 @@ const __mod_ui = (() => {
     game.upgradeRects = [];
     const colors = [COLORS.cyan, COLORS.pink, COLORS.good];
     game.upgradeCards.forEach((card, i) => {
-      const rect = { x: 30, y: 158 + i * 132, w: W - 60, h: 116 };
+      const rect = { x: 30, y: 158 + (game.upgradeCards.length === 2 ? 66 : 0) + i * 132, w: W - 60, h: 116 };
       const col = colors[i % colors.length];
       const wobble = 1 + 0.01 * Math.sin(game.time * 3 + i);
       ctx.save();
@@ -3484,7 +3531,7 @@ const __mod_ui = (() => {
       ctx.restore();
       game.upgradeRects.push(rect);
     });
-    drawText(ctx, 'tap a card', W / 2, 588, { size: 13, color: '#9fb6d8', weight: 'normal' });
+    drawText(ctx, game.desktop ? 'click a card or press 1 / 2 / 3' : 'tap a card', W / 2, 588, { size: 13, color: '#9fb6d8', weight: 'normal' });
   }
 
   function drawGameOver(ctx, game) {
@@ -3656,7 +3703,7 @@ const __mod_ui = (() => {
       game.lbButtons.push({ id: 'back', ...drawButton(ctx, { x: W / 2 - 100, y: 606, w: 200, h: 48 }, 'BACK', '#ffffff') });
     }
   }
-  return { drawHUD, drawBanner, drawMenu, HOW_PAGE_COUNT, drawHowTo, drawInstall, drawChallengeModal, drawToast, drawPause, drawUpgrade, drawGameOver, drawLeaderboard };
+  return { drawHUD, drawBanner, drawMenu, HOW_PAGE_COUNT, drawHowTo, drawInstall, drawChallengeModal, drawTip, drawToast, drawPause, drawUpgrade, drawGameOver, drawLeaderboard };
 })();
 
 /* ======================= FILE: game.js ======================= */
@@ -3692,7 +3739,7 @@ const __mod_game = (() => {
   const { detectPlatform } = __mod_inapp;
   const { drawText } = __mod_draw;
   const { Leaderboard, cleanName } = __mod_leaderboard;
-  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, drawInstall, drawChallengeModal, drawToast, HOW_PAGE_COUNT } = __mod_ui;
+  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, drawInstall, drawChallengeModal, drawToast, drawTip, HOW_PAGE_COUNT } = __mod_ui;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -3735,6 +3782,10 @@ const __mod_game = (() => {
       this.toast = null;
       this.onlineStatus = 'off';                        // 'off' | 'connecting' | 'online' | 'offline'
       this.standalone = this._isStandalone();
+      this.desktop = options.desktop === true;          // mouse + keyboard player (no touch screen)
+      this.tipsOn = options.tips === true;              // first-time tips (main.js turns them on)
+      this.tipsSeen = this._loadTips();
+      this.tip = null;
       this.platform = detectPlatform(globalThis.navigator?.userAgent || '');
       this.mode = 'ranked';   // RANKED is the default mode
       this.lbView = { tab: 'device', from: 'menu', highlight: null, online: { status: 'idle', rows: [] }, ranked: { status: 'idle', rows: [] } };
@@ -3747,7 +3798,7 @@ const __mod_game = (() => {
 
       this.state = 'menu';
       this.stateTime = 0;
-      this.touchMode = true;  // mobile-only game: always show the on-screen buttons
+      this.touchMode = !this.desktop; // phones show the on-screen buttons; desktops use the keyboard
       this.menuIndex = 0;
       this.cardRects = [];
       this.time = 0;
@@ -3888,7 +3939,7 @@ const __mod_game = (() => {
 
     /** Show the "pick 1 of 3" cards. */
     openUpgrade() {
-      this.upgradeCards = pickCards(this.runRng, this.owned, 3);
+      this.upgradeCards = pickCards(this.runRng, this.owned, this.stageIndex === 0 ? 2 : 3); // the first boss offers just 2 cards
       this.upgradeRects = [];
       this._setState('upgrade');
       this.input.touchEnd(this.input.touch.id);
@@ -3924,7 +3975,7 @@ const __mod_game = (() => {
       this.stageTime = 0;
       this.difficulty = 1 + CONFIG.loopDifficultyStep * Math.floor(this.stageIndex / STAGES.length); // endless loops get harder
       this.rules.setStage(this.stage, this.stageIndex);
-      this.spawner.onStageStart();
+      this.spawner.onStageStart(this.stageIndex);
       this.banner = { t: 0, dur: 2.8 };
       this.sfx.play('stage');
     }
@@ -3981,6 +4032,10 @@ const __mod_game = (() => {
         case 'paused':
           if (this.input.wasPressed('pause')) this._setState('playing');
           break;
+        case 'tip':
+          if (this.stateTime > 0.9 && (this.input.wasPressed('confirm') || this.input.wasPressed('pause'))) this.dismissTip();
+          else if (this.stateTime > 12) this.dismissTip();
+          break;
         case 'upgrade':
           this.updateEffects(dt);
           if (this.stateTime > 0.5) {
@@ -4011,7 +4066,7 @@ const __mod_game = (() => {
       if (!this.music) return;
       let theme = null;
       if (this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' || this.state === 'install') theme = 'menu';
-      else if (this.state === 'playing' || this.state === 'paused' || this.state === 'upgrade') {
+      else if (this.state === 'playing' || this.state === 'paused' || this.state === 'upgrade' || this.state === 'tip') {
         theme = this.phase === 'boss' ? 'boss' : `s${this.stageIndex % STAGES.length}`;
       }
       this.music.setTheme(theme);
@@ -4032,6 +4087,61 @@ const __mod_game = (() => {
 
     _isStandalone() {
       try { return Boolean(globalThis.navigator?.standalone || globalThis.matchMedia?.('(display-mode: standalone)').matches); } catch { return false; }
+    }
+
+    // ---------------------------------------------------------------------------
+    // First-time tips: the game pauses for a moment the FIRST time something appears
+    // ---------------------------------------------------------------------------
+
+    _loadTips() {
+      try {
+        const raw = globalThis.localStorage?.getItem('mathStriker.tips.v1');
+        const list = JSON.parse(raw || '[]');
+        return new Set(Array.isArray(list) ? list : []);
+      } catch { return new Set(); }
+    }
+
+    _saveTips() {
+      try { globalThis.localStorage?.setItem('mathStriker.tips.v1', JSON.stringify([...this.tipsSeen])); } catch { /* private mode */ }
+    }
+
+    /** Show a tip once per phone. Returns true if it was shown. */
+    maybeTip(id, title, text, color = COLORS.gold) {
+      if (!this.tipsOn || this.state !== 'playing' || this.tipsSeen.has(id)) return false;
+      this.tipsSeen.add(id);
+      this._saveTips();
+      this.input.touchEnd(this.input.touch.id);
+      this.tip = { id, title, text, color };
+      this._setState('tip');
+      return true;
+    }
+
+    dismissTip() {
+      if (this.state !== 'tip') return;
+      this.tip = null;
+      this._setState('playing');
+    }
+
+    /** Look for something the player has not met yet and explain it. */
+    checkTips() {
+      if (!this.tipsOn || this.state !== 'playing' || this.tipsSeen.size >= 99) return;
+      const T = this.maybeTip.bind(this);
+      if (this.stageIndex === 0 && this.stageTime > 0.5 && T('move', 'FLY!', this.desktop ? 'Move with the ARROW KEYS or WASD (or hold the mouse button and drag). It shoots by itself.' : 'Drag your finger to move your ship. It shoots by itself.', COLORS.cyan)) return;
+      if (this.tokens.some((t) => t.y > 150 && t.y < 600)) {
+        if (T('catch', 'CATCH OR AVOID', 'A CIRCLE helps you: fly into it. A DIAMOND hurts you: shoot it or dodge it. Read the stage rule at the top right.', COLORS.good)) return;
+      }
+      if (this.obstacles.some((o) => o.y > 40 && o.y < 500) && T('rock', 'DANGER!', 'Orange rocks and walls cost a LIFE. You cannot shoot them. Dodge them, and fly through the gap in a wall.', COLORS.hazard)) return;
+      const pu = this.powerups.find((u) => u.y > 60 && u.y < 500 && POWERUP_INFO[u.kind]?.desc);
+      if (pu) {
+        const info = POWERUP_INFO[pu.kind];
+        if (T(`pu-${pu.kind}`, `${info.glyph}  ${info.name}`, `${info.desc} Fly into it to use it.`, info.color)) return;
+      }
+      if (this.gates.some((g) => !g.resolved && g.y > 30 && g.y < 450) && T('gate', 'MAKE N', 'Fly through the box whose answer equals N (shown at the top). Right: bonus and a free power-up. Wrong: you lose a life.', COLORS.good)) return;
+      if (this.tokens.some((t) => t.kind === 'int' && t.value === 0 && t.op !== '+' && t.op !== '−' && t.y > 40 && t.y < 500)
+        && T('zero', 'ZERO!', '×0 kills you and ÷0 costs a life. A zero takes many shots, so dodge it or use the BOMB.', '#ffffff')) return;
+      if (this.boss && this.boss.state === 'fight' && T('boss', 'BOSS!', 'Shoot its number down to 0 and dodge its bullets. Touching it costs a life. Beat it to pick an upgrade.', COLORS.bad)) return;
+      if (this.stageIndex === 0 && this.stageTime > 26 && this.bombs > 0 && this.tokens.filter((t) => t.role === 'bad').length >= 4
+        && T('bomb', 'PRIME BOMB', this.desktop ? 'When it gets crowded, press B for the BOMB. It clears most enemies. In the later stages, prime numbers survive it.' : 'When it gets crowded, tap BOMB (bottom left). It clears most enemies. In the later stages, prime numbers survive it.', COLORS.violet)) return;
     }
 
     /** Give the boards the registered player's id and name. */
@@ -4194,6 +4304,9 @@ const __mod_game = (() => {
           this.upgradeRects.forEach((r, i) => { if (inRect(r)) this.chooseUpgrade(i); });
           return true;
         }
+        case 'tip':
+          if (this.stateTime > 0.9) this.dismissTip(); // ignore the tap that was still moving the ship
+          return true;
         case 'paused': {
           const btn = buttonAt(this.pauseButtons || []);
           if (btn?.id === 'resume') this._setState('playing');
@@ -4335,7 +4448,7 @@ const __mod_game = (() => {
       this.counterT = Math.max(0, (this.counterT || 0) - dt);
       this.player.counterMul = this.counterT > 0 ? this.character.counter.mult : 1;
       this.player.update(dt, this.input);
-      if (this.input.isDown('shoot') || this.input.touch.active) { // touching = auto-fire
+      if (this.desktop || this.input.isDown('shoot') || this.input.touch.active) { // desktop and touching = auto-fire
         const shots = this.player.tryFire();
         if (shots) {
           this.bullets.push(...shots);
@@ -4365,6 +4478,7 @@ const __mod_game = (() => {
       this.updateEntities(dt);
       this.updateCollisions();
       this.cleanup();
+      this.checkTips();
 
       // --- bookkeeping & death ------------------------------------------------
       this.peakScore = Math.max(this.peakScore, this.rules.score);
@@ -4637,7 +4751,7 @@ const __mod_game = (() => {
         g.resolved = 'right';
         const reward = Math.round(CONFIG.gates.reward * (1 + 0.25 * this.stageIndex));
         this.rules.addScore(reward);
-        const kinds = ['abs', 'pi', 'sq', 'slow', 'guard', 'double', 'freeze'];
+        const kinds = this.spawner.powerKinds(this.stageIndex);
         const kind = kinds[Math.floor(this.runRng() * kinds.length)];
         this.rules.activatePowerup(kind);
         this.addText(g.x, g.y - 30, `${g.text} = ${g.value}  CORRECT!  +${reward}`, COLORS.good, 18);
@@ -4894,6 +5008,7 @@ const __mod_game = (() => {
         drawHUD(ctx, this);
         if (this.state === 'playing') drawBanner(ctx, this);
         if (this.state === 'paused') drawPause(ctx, this);
+        if (this.state === 'tip') drawTip(ctx, this);
         if (this.state === 'upgrade') drawUpgrade(ctx, this);
         if (this.state === 'gameover') drawGameOver(ctx, this);
       }
@@ -4936,7 +5051,7 @@ const __mod_game = (() => {
       if (this.boss) this.boss.draw(ctx);
       this.bullets.forEach((b) => b.draw(ctx));
 
-      if (this.state === 'playing' || this.state === 'paused' || this.state === 'upgrade') {
+      if (this.state === 'playing' || this.state === 'paused' || this.state === 'upgrade' || this.state === 'tip') {
         this.drawPlayerAuras(ctx);
         // blink while protected after losing a life
         if (this.invuln > 0 && Math.floor(this.time * 14) % 2 === 0) ctx.globalAlpha = 0.3;
@@ -5070,10 +5185,7 @@ const __mod_main = (() => {
   const forceDesktop = params.has('desktop');
   const inApp = params.has('inapp') ? 'Messenger' : detectInAppBrowser(navigator.userAgent);
 
-  if (!isTouchDevice && !forceDesktop) {
-    $('desktop-notice').hidden = false;
-    $('game').hidden = true;
-  } else if (inApp && (params.has('inapp') || !session.get('ms.inapp.ok'))) {
+  if (inApp && (params.has('inapp') || !session.get('ms.inapp.ok'))) {
     showInAppPrompt(inApp);
   } else {
     startGame();
@@ -5225,7 +5337,7 @@ const __mod_main = (() => {
     const music = new Music(sfx);
     const profile = new Profile();
     const game = new Game(canvas, input, sfx, {
-      dpr, askName, music, profile,
+      dpr, askName, music, profile, tips: true, desktop: !isTouchDevice,
       challenge: readChallenge(),
       // SWITCH PLAYER button: ask again, and resolve the new profile (or null if cancelled)
       openRegister: () => askRegister(profile, { canCancel: true }),
@@ -5241,7 +5353,7 @@ const __mod_main = (() => {
       music.start(); // background music (needs the first tap)
       if (!firstTap) return;
       firstTap = false;
-      try {
+      if (isTouchDevice) try {
         document.documentElement.requestFullscreen?.()
           .then(() => screen.orientation?.lock?.('portrait'))
           .catch(() => {}); // not supported (e.g. iPhone Safari): that is fine
