@@ -223,7 +223,37 @@ const __mod_config = (() => {
       dragSensitivity: 1.3,                      // ship moves this much per pixel dragged
       bomb: { x: 8, y: 660, w: 130, h: 50 },
       pause: { x: 420, y: 66, w: 52, h: 40 },
+      mute: { x: 362, y: 66, w: 52, h: 40 },
     },
+
+    // --- Bosses, gates, formations, combos -------------------------------------------
+    bossTimeout: 55,          // seconds before a boss gives up and leaves (no reward)
+    bombBossDamage: 8,        // a Prime Bomb hurts a boss this much
+    combo: { window: 2.2, milestone: 5, bonus: 4, maxBonus: 30 }, // chain kills/pickups within `window` secs
+    graze: { margin: 15, reward: 2, cooldown: 0.18 },             // near-miss "CLOSE CALL" bonus
+    gates: { first: 15, interval: [20, 28], w: 128, h: 62, reward: 30, speed: 92 },
+    formations: { first: 10, interval: [8, 13] },
+    splitMinValue: 4,         // hostile numbers this big may split in two when shot
+    slowmo: { lastLifeSecs: 0.9, lastLifeScale: 0.35, deathScale: 0.4, deathSecs: 0.7 },
+    multFlash: [8, 16, 32, 64], // multiplier values that trigger the big flash
+
+    // --- Ranked mode (weekly season, same enemy sequence for everybody) ----------------
+    // The board keeps ONE row per player name: your best score of the season.
+    // A tier is reached when your best score this season reaches `min`.
+    ranked: {
+      tiers: [
+        { name: 'BRONZE',   min: 0,    color: '#d79b64' },
+        { name: 'SILVER',   min: 400,  color: '#d6dde8' },
+        { name: 'GOLD',     min: 1000, color: '#ffd75e' },
+        { name: 'PLATINUM', min: 2200, color: '#7df9ff' },
+        { name: 'DIAMOND',  min: 4000, color: '#9b8cff' },
+        { name: 'MASTER',   min: 7000, color: '#ff6bd6' },
+      ],
+      nameMax: 12,
+      storageKey: 'mathStriker.ranked.v1',
+      size: 10,
+    },
+
 
     // --- Lives & obstacles --------------------------------------------------------
     // Obstacles are orange METEORS and striped WALLS. They cannot be shot and they
@@ -297,6 +327,43 @@ const __mod_config = (() => {
     },
   ];
   return { CONFIG, CHARACTERS };
+})();
+
+/* ======================= FILE: rng.js ======================= */
+const __mod_rng = (() => {
+  // =============================================================================
+  // rng.js  -  small random helpers.
+  //   mulberry32(seed)  a seedable random generator: same seed = same sequence
+  //   hash53(text)      a quick text hash (NOT secure, just stable)
+  // =============================================================================
+
+  function mulberry32(seed) {
+    let a = seed | 0;
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  /** cyrb53: stable 53-bit hash of a string, returned as a hex string. */
+  function hash53(str, seed = 0) {
+    let h1 = 0xdeadbeef ^ seed;
+    let h2 = 0x41c6ce57 ^ seed;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
+  }
+
+  /** Pick one item from a list with the given random function. */
+  const pickOne = (rng, list) => list[Math.floor(rng() * list.length)];
+  return { mulberry32, hash53, pickOne };
 })();
 
 /* ======================= FILE: stages.js ======================= */
@@ -528,6 +595,28 @@ const __mod_audio = (() => {
     bomb:     { freq: 110, slide: -70,  dur: 0.55, type: 'sawtooth', gain: 0.70 },
     stage:    { freq: 440, slide: 440,  dur: 0.40, type: 'triangle', gain: 0.55 },
     gameover: { freq: 220, slide: -170, dur: 0.80, type: 'sawtooth', gain: 0.60 },
+    combo:    { freq: 700, slide: 500,  dur: 0.16, type: 'square',   gain: 0.30 },
+    graze:    { freq: 1400, slide: 300, dur: 0.05, type: 'sine',     gain: 0.30 },
+    gate:     { freq: 520, slide: 780,  dur: 0.35, type: 'triangle', gain: 0.65 },
+    wrong:    { freq: 200, slide: -120, dur: 0.35, type: 'square',   gain: 0.45 },
+    boss:     { freq: 90,  slide: 60,   dur: 0.90, type: 'sawtooth', gain: 0.65 },
+    explode:  { freq: 180, slide: -140, dur: 0.45, type: 'sawtooth', gain: 0.70 },
+    card:     { freq: 560, slide: 260,  dur: 0.14, type: 'triangle', gain: 0.55 },
+    mult:     { freq: 400, slide: 900,  dur: 0.30, type: 'square',   gain: 0.35 },
+  };
+
+  // -----------------------------------------------------------------------------
+  // Music: a tiny generated loop (bass + arpeggio) per theme. No audio files.
+  //   root = lowest note in Hz, scale = semitone steps, bpm = tempo.
+  // -----------------------------------------------------------------------------
+  const ARP = [0, 2, 4, 2, 1, 3, 5, 3, 0, 2, 4, 6, 5, 3, 2, 1]; // scale degrees, one per 16th note
+  const THEMES = {
+    menu: { bpm: 90,  root: 110.0, scale: [0, 3, 5, 7, 10],          bass: [0, 8],            wave: 'triangle' },
+    s0:   { bpm: 116, root: 130.8, scale: [0, 2, 4, 7, 9],           bass: [0, 4, 8, 12],     wave: 'triangle' },
+    s1:   { bpm: 122, root: 123.5, scale: [0, 2, 3, 5, 7, 8, 10],    bass: [0, 6, 8, 14],     wave: 'square' },
+    s2:   { bpm: 128, root: 146.8, scale: [0, 2, 3, 5, 7, 9, 10],    bass: [0, 3, 6, 8, 11, 14], wave: 'triangle' },
+    s3:   { bpm: 134, root: 138.6, scale: [0, 1, 4, 5, 7, 8, 11],    bass: [0, 4, 8, 12],     wave: 'square' },
+    boss: { bpm: 150, root: 98.0,  scale: [0, 1, 3, 5, 7, 8, 10],    bass: [0, 2, 4, 6, 8, 10, 12, 14], wave: 'sawtooth' },
   };
 
   class Sfx {
@@ -547,6 +636,7 @@ const __mod_audio = (() => {
 
     toggleMute() {
       this.muted = !this.muted;
+      return this.muted;
     }
 
     play(name) {
@@ -570,7 +660,81 @@ const __mod_audio = (() => {
       osc.stop(now + p.dur + 0.02);
     }
   }
-  return { Sfx };
+
+  class Music {
+    /** @param {Sfx} sfx  shares its AudioContext and mute switch */
+    constructor(sfx) {
+      this.sfx = sfx;
+      this.theme = null;     // name of the theme that should be playing (null = silence)
+      this.playing = null;   // theme currently scheduled
+      this.step = 0;
+      this.nextTime = 0;
+      this.timer = null;
+      this.volume = 0.5;
+    }
+
+    setTheme(name) {
+      this.theme = name && THEMES[name] ? name : null;
+    }
+
+    /** Start the scheduler (safe to call often). Needs the AudioContext from sfx.unlock(). */
+    start() {
+      if (this.timer || !this.sfx.ctx || typeof setInterval !== 'function') return;
+      this.timer = setInterval(() => this.tick(), 100);
+    }
+
+    stop() {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+    }
+
+    /** Schedule notes a little ahead of time so the beat never stutters. */
+    tick() {
+      const ctx = this.sfx.ctx;
+      if (!ctx) return;
+      if (this.sfx.muted || !this.theme) { this.playing = null; return; }
+      if (this.playing !== this.theme) {
+        this.playing = this.theme;
+        this.step = 0;
+        this.nextTime = ctx.currentTime + 0.05;
+      }
+      const th = THEMES[this.playing];
+      const stepDur = 60 / th.bpm / 4;
+      if (this.nextTime < ctx.currentTime - 0.5) this.nextTime = ctx.currentTime + 0.05; // tab was asleep
+      while (this.nextTime < ctx.currentTime + 0.35) {
+        this._note(th, this.step % 16, this.nextTime, stepDur);
+        this.nextTime += stepDur;
+        this.step++;
+      }
+    }
+
+    _note(th, i, when, stepDur) {
+      const semis = th.scale;
+      const degree = ARP[i] % semis.length;
+      const arpFreq = th.root * 4 * Math.pow(2, semis[degree] / 12);
+      this._tone(arpFreq, th.wave, when, stepDur * 0.9, 0.05);
+      if (th.bass.includes(i)) {
+        const b = th.root * Math.pow(2, semis[(i >> 2) % 2 ? Math.min(2, semis.length - 1) : 0] / 12);
+        this._tone(b, 'triangle', when, stepDur * 1.8, 0.11);
+      }
+    }
+
+    _tone(freq, type, when, dur, gain) {
+      const ctx = this.sfx.ctx;
+      const osc = ctx.createOscillator();
+      const amp = ctx.createGain();
+      osc.type = type;
+      osc.frequency.setValueAtTime(freq, when);
+      const g = this.sfx.master * gain * this.volume * 4;
+      amp.gain.setValueAtTime(0.0001, when);
+      amp.gain.exponentialRampToValueAtTime(g, when + 0.01);
+      amp.gain.exponentialRampToValueAtTime(0.0001, when + dur);
+      osc.connect(amp).connect(ctx.destination);
+      osc.start(when);
+      osc.stop(when + dur + 0.02);
+    }
+  }
+  return { THEMES, Sfx, Music };
 })();
 
 /* ======================= FILE: input.js ======================= */
@@ -598,6 +762,7 @@ const __mod_input = (() => {
     mute: ['KeyM'],
     pick1: ['Digit1'],
     pick2: ['Digit2'],
+    pick3: ['Digit3'],
   };
 
   // Keys whose default browser behaviour (page scroll) must be suppressed.
@@ -670,6 +835,69 @@ const __mod_input = (() => {
   return { KEYMAP, Input };
 })();
 
+/* ======================= FILE: upgrades.js ======================= */
+const __mod_upgrades = (() => {
+  // =============================================================================
+  // upgrades.js  -  the "pick 1 of 3" cards you get after every boss.
+  // Persistent effects live in a `mods` object shared by MathRules and Player.
+  // Instant effects (bombs, repair, heart) are applied through the game.
+  // =============================================================================
+
+  const { CONFIG } = __mod_config;
+
+  const DEFAULT_MODS = () => ({
+    damage: 1,      // multiplies shot damage
+    cooldown: 1,    // multiplies the time between shots (lower = faster)
+    loss: 1,        // multiplies every point you lose
+    powerTime: 1,   // multiplies power-up duration
+    decay: 1,       // multiplies the seconds before the multiplier halves
+    magnet: 0,      // passive pickup-pull radius, in pixels
+    graze: 1,       // multiplies the CLOSE CALL reward
+  });
+
+  const UPGRADES = [
+    { id: 'dmg',    icon: '✦', name: 'POWER SHOTS',  desc: 'Shots hit 25% harder.',               max: 3, apply: (m) => { m.damage *= 1.25; } },
+    { id: 'rate',   icon: '≫', name: 'RAPID FIRE',   desc: 'Shoot 18% faster.',                   max: 3, apply: (m) => { m.cooldown *= 0.82; } },
+    { id: 'armor',  icon: '▣', name: 'THICK SKIN',   desc: 'Take 12% less score damage.',         max: 3, apply: (m) => { m.loss *= 0.88; } },
+    { id: 'power',  icon: 'π', name: 'LONG POWER',   desc: 'Power-ups last 35% longer.',          max: 3, apply: (m) => { m.powerTime *= 1.35; } },
+    { id: 'hold',   icon: '×', name: 'MULT LOCK',    desc: 'Multiplier decays 50% slower.',       max: 2, apply: (m) => { m.decay *= 1.5; } },
+    { id: 'magnet', icon: '◎', name: 'LUCKY MAGNET', desc: 'Pickups drift toward you.',           max: 3, apply: (m) => { m.magnet += 55; } },
+    { id: 'graze',  icon: '⚡', name: 'DAREDEVIL',    desc: 'CLOSE CALL bonus is doubled.',        max: 2, apply: (m) => { m.graze *= 2; } },
+    { id: 'bombs',  icon: '◉', name: 'BOMB CACHE',   desc: `Refill Prime Bombs to ${CONFIG.maxBombs}.`, max: 99, instant: 'bombs' },
+    { id: 'repair', icon: '+', name: 'REPAIR',       desc: 'Gain 40 score right now.',            max: 99, instant: 'repair' },
+    { id: 'heart',  icon: '♥', name: 'EXTRA LIFE',   desc: '+1 life (or +60 score if full).',     max: 99, instant: 'heart' },
+  ];
+
+  const upgradeById = (id) => UPGRADES.find((u) => u.id === id);
+
+  /** Three different cards the player has not maxed out yet. */
+  function pickCards(rng, owned = {}, count = 3) {
+    const pool = UPGRADES.filter((u) => (owned[u.id] || 0) < u.max);
+    const cards = [];
+    while (cards.length < count && pool.length) {
+      const i = Math.floor(rng() * pool.length);
+      cards.push(pool.splice(i, 1)[0]);
+    }
+    return cards;
+  }
+
+  /** Apply a card. `game` supplies mods, rules, lives, bombs. Returns a short message. */
+  function applyUpgrade(game, id) {
+    const u = upgradeById(id);
+    if (!u) return '';
+    game.owned[id] = (game.owned[id] || 0) + 1;
+    if (u.apply) { u.apply(game.mods); return u.name; }
+    if (u.instant === 'bombs') game.bombs = CONFIG.maxBombs;
+    else if (u.instant === 'repair') game.rules.addScore(40);
+    else if (u.instant === 'heart') {
+      if (game.lives < CONFIG.maxLives) game.lives++;
+      else game.rules.addScore(60);
+    }
+    return u.name;
+  }
+  return { DEFAULT_MODS, UPGRADES, upgradeById, pickCards, applyUpgrade };
+})();
+
 /* ======================= FILE: mathRules.js ======================= */
 const __mod_mathRules = (() => {
   // =============================================================================
@@ -693,6 +921,7 @@ const __mod_mathRules = (() => {
   // =============================================================================
 
   const { CONFIG } = __mod_config;
+  const { DEFAULT_MODS } = __mod_upgrades;
 
   const MINUS = '−';
   const TIMES = '×';
@@ -718,6 +947,7 @@ const __mod_mathRules = (() => {
       this.multTimer = 0;     // seconds since the multiplier was last refreshed
       // Seconds remaining for each timed power-up.
       this.fx = { abs: 0, pi: 0, sq: 0 };
+      this.mods = DEFAULT_MODS(); // upgrade multipliers (shared with the Player by Game)
     }
 
     // ---- state queries --------------------------------------------------------
@@ -748,7 +978,7 @@ const __mod_mathRules = (() => {
       // "Use it or lose it": a big multiplier halves every few seconds.
       if (this.multiplier > 1) {
         this.multTimer += dt;
-        if (this.multTimer >= CONFIG.multiplierDecaySecs) {
+        if (this.multTimer >= CONFIG.multiplierDecaySecs * this.mods.decay) {
           this.multTimer = 0;
           this.multiplier = Math.max(1, Math.floor(this.multiplier / 2));
         }
@@ -758,7 +988,7 @@ const __mod_mathRules = (() => {
     }
 
     activatePowerup(kind) {
-      this.fx[kind] = CONFIG.powerupDuration[kind];
+      this.fx[kind] = CONFIG.powerupDuration[kind] * this.mods.powerTime;
     }
 
     /** Flat score change that ignores multipliers and defense (stage bonuses). */
@@ -778,7 +1008,7 @@ const __mod_mathRules = (() => {
       // `pct` adds a share of the CURRENT score on top of the flat amount, so the
       // more you are carrying, the more a hit costs (score is health, after all).
       const base = raw + Math.ceil(Math.max(0, this.score) * pct);
-      const d = Math.max(1, Math.round(base * this.character.lossScale * this.dangerScale));
+      const d = Math.max(1, Math.round(base * this.character.lossScale * this.dangerScale * this.mods.loss));
       this.score -= d;
       return { delta: -d, label: `${prefix}${MINUS}${d}`, tone: 'bad' };
     }
@@ -998,6 +1228,9 @@ const __mod_entities = (() => {
       this.freq = spec.freq ?? 0;
       this.hp = spec.hp ?? 1;
       this.shooter = spec.shooter || null; // { interval, volley } -> fires -n bullets
+      this.splits = Boolean(spec.splits);  // hostile number that breaks into two smaller ones when shot
+      this.orbit = spec.orbit || null;     // { cx, cy, R, ang, w } for the 'orbit' pattern (ring formations)
+      this.zdir = spec.zdir || 1;          // 'zigzag' direction
       this.fireTimer = this.shooter ? this.shooter.interval * (0.5 + Math.random() * 0.5) : 0;
       this.t = 0;
       this.flash = 0;
@@ -1043,8 +1276,22 @@ const __mod_entities = (() => {
     update(dt) {
       const prev = this.t;
       this.t += dt;
+      if (this.pattern === 'orbit' && this.orbit) {
+        // circles around a centre that itself falls down the screen
+        const o = this.orbit;
+        o.cy += this.vy * dt;
+        o.ang += o.w * dt;
+        this.x = o.cx + Math.cos(o.ang) * o.R;
+        this.y = o.cy + Math.sin(o.ang) * o.R;
+        if (this.flash > 0) this.flash -= dt;
+        return;
+      }
       this.y += this.vy * dt;
-      if (this.pattern === 'sine') {
+      if (this.pattern === 'zigzag') {
+        // sharp left-right turns every 0.7 seconds
+        this.zdir = Math.floor(this.t / 0.7) % 2 === 0 ? 1 : -1;
+        this.x = clamp(this.x + this.zdir * 105 * dt, this.radius, W - this.radius);
+      } else if (this.pattern === 'sine') {
         // incremental so the Pi Magnet can nudge x without being overwritten
         this.x += this.amp * (Math.sin(this.t * this.freq) - Math.sin(prev * this.freq));
       } else if (this.pattern === 'drift') {
@@ -1092,6 +1339,18 @@ const __mod_entities = (() => {
       ctx.fill();
       ctx.stroke();
       ctx.shadowBlur = 0;
+
+      // Splitters have a seam: they break in two when shot
+      if (this.splits && !good) {
+        const r = this.radius * 1.3;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(0, -r); ctx.lineTo(0, r);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
 
       // Gold ring = "prime, survived the bomb"
       if (this.spared > 0) {
@@ -1290,6 +1549,76 @@ const __mod_entities = (() => {
   }
 
   // -----------------------------------------------------------------------------
+  // Gate: one of three falling answer boxes for a "MAKE N" puzzle (see gate.js).
+  // Which box is right is never shown. Fly through the one equal to the target.
+  // -----------------------------------------------------------------------------
+  class Gate {
+    constructor(o) {
+      Object.assign(this, { x: o.x, y: o.y ?? -40, w: o.w, h: o.h, text: o.text, value: o.value, correct: o.correct, setId: o.setId, vy: o.vy });
+      this.t = 0;
+      this.resolved = ''; // '' | 'right' | 'wrong' | 'gone'
+      this.fade = 1;
+      this.dead = false;
+    }
+
+    update(dt) {
+      this.t += dt;
+      this.y += this.vy * dt;
+      if (this.resolved) this.fade -= dt * 3;
+      if (this.y > H + 80 || this.fade <= 0) this.dead = true;
+    }
+
+    touchesCircle(cx, cy, cr) {
+      const nx = clamp(cx, this.x - this.w / 2, this.x + this.w / 2);
+      const ny = clamp(cy, this.y - this.h / 2, this.y + this.h / 2);
+      const dx = cx - nx;
+      const dy = cy - ny;
+      return dx * dx + dy * dy <= cr * cr;
+    }
+
+    draw(ctx) {
+      const col = this.resolved === 'right' ? COLORS.good : this.resolved === 'wrong' ? COLORS.bad : COLORS.cyan;
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, this.fade);
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 16;
+      ctx.fillStyle = 'rgba(8,24,52,0.9)';
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 3;
+      pathRoundRect(ctx, this.x - this.w / 2, this.y - this.h / 2, this.w, this.h, 14);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      // little "=?" tag so it reads as a question
+      drawText(ctx, this.text, this.x, this.y + 1, { size: 26, color: '#ffffff', glow: 6 });
+      ctx.restore();
+    }
+  }
+
+  // -----------------------------------------------------------------------------
+  // Ring: an expanding shockwave (bigger explosions).
+  // -----------------------------------------------------------------------------
+  class Ring {
+    constructor(x, y, color, max = 70, speed = 260, width = 4) {
+      Object.assign(this, { x, y, color, max, speed, width, r: 6, dead: false });
+    }
+    update(dt) {
+      this.r += this.speed * dt;
+      this.speed *= 0.97;
+      if (this.r >= this.max) this.dead = true;
+    }
+    draw(ctx) {
+      ctx.globalAlpha = Math.max(0, 1 - this.r / this.max);
+      ctx.strokeStyle = this.color;
+      ctx.lineWidth = this.width * (1 - this.r / this.max) + 1;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.r, 0, TAU);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  // -----------------------------------------------------------------------------
   // Pure visual effects
   // -----------------------------------------------------------------------------
   class Particle {
@@ -1340,6 +1669,7 @@ const __mod_entities = (() => {
       this.cooldown = 0;
       this.volley = 0;
       this.t = 0;
+      this.mods = null;   // shared upgrade multipliers (set by Game)
     }
 
     /** Tiny core hitbox (shmup convention): hazards must touch the cockpit. */
@@ -1383,10 +1713,10 @@ const __mod_entities = (() => {
     tryFire() {
       if (this.cooldown > 0) return null;
       const c = this.character;
-      this.cooldown = c.fireCooldown;
+      this.cooldown = c.fireCooldown * (this.mods?.cooldown ?? 1);
       this.volley++;
 
-      const dmg = c.damage * this.sizeScale; // a shrunken ship hits weaker
+      const dmg = c.damage * this.sizeScale * (this.mods?.damage ?? 1); // a shrunken ship hits weaker
       const make = (x, angle, d, color) => new Bullet({
         x, y: this.y - 20, owner: 'player', damage: d, color,
         vx: Math.sin(angle) * 640, vy: -Math.cos(angle) * 640,
@@ -1406,7 +1736,77 @@ const __mod_entities = (() => {
       drawShip(ctx, this.character, this.x, this.y, this.sizeScale, this.t);
     }
   }
-  return { MINUS, TIMES, DIVIDE, COLORS, Bullet, Token, POWERUP_INFO, PowerUp, Obstacle, Particle, FloatingText, Player };
+  return { MINUS, TIMES, DIVIDE, COLORS, Bullet, Token, POWERUP_INFO, PowerUp, Obstacle, Gate, Ring, Particle, FloatingText, Player };
+})();
+
+/* ======================= FILE: gate.js ======================= */
+const __mod_gate = (() => {
+  // =============================================================================
+  // gate.js  -  "MAKE N" math gates. Pure logic, no drawing.
+  // A banner shows a target number. Three gates fall, each with a small equation.
+  // Fly through the one that equals the target: bonus. Wrong one: you lose a life.
+  // =============================================================================
+
+  const rint = (rng, a, b) => a + Math.floor(rng() * (b - a + 1));
+
+  /** One equation for the given stage operator that equals `target`. */
+  function equationFor(op, target, rng) {
+    switch (op) {
+      case '−': { const b = rint(rng, 1, 9); return { text: `${target + b}−${b}`, value: target }; }
+      case '×': {
+        const divs = [];
+        for (let d = 2; d <= 9; d++) if (target % d === 0 && target / d >= 2) divs.push(d);
+        if (divs.length) { const d = divs[Math.floor(rng() * divs.length)]; return { text: `${d}×${target / d}`, value: target }; }
+        return { text: `${target}×1`, value: target };
+      }
+      case '÷': { const b = rint(rng, 2, 6); return { text: `${target * b}÷${b}`, value: target }; }
+      default: { const a = rint(rng, 1, target - 1); return { text: `${a}+${target - a}`, value: target }; }
+    }
+  }
+
+  /** A WRONG equation of the same style whose value is `value` (never equal to target). */
+  function wrongEquation(op, value, rng) {
+    const e = equationFor(op, value, rng);
+    return e;
+  }
+
+  /**
+   * Build one gate puzzle.
+   * @returns {{target:number, op:string, options:{text:string,value:number,correct:boolean}[]}}
+   */
+  function makeGate(op, rng, stagesCleared = 0) {
+    const hi = op === '×' ? 36 : op === '÷' ? 12 : 18 + 2 * stagesCleared;
+    const target = op === '×' ? [6, 8, 10, 12, 14, 15, 16, 18, 20, 24, 30, 36][rint(rng, 0, 11)] : rint(rng, 6, Math.max(8, hi));
+    const wrongValues = new Set();
+    const deltas = [-3, -2, -1, 1, 2, 3, 4, -4];
+    let guard = 0;
+    while (wrongValues.size < 2 && guard++ < 50) {
+      const v = target + deltas[Math.floor(rng() * deltas.length)];
+      if (v !== target && v >= 2) wrongValues.add(v);
+    }
+    // Fallback so we always have two different wrong values
+    for (let v = target + 1; wrongValues.size < 2; v++) wrongValues.add(v);
+
+    const options = [
+      { ...equationFor(op, target, rng), correct: true },
+      ...[...wrongValues].map((v) => ({ ...wrongEquation(op, v, rng), correct: false })),
+    ];
+    // Shuffle (Fisher-Yates) so the right answer is not always on the left
+    for (let i = options.length - 1; i > 0; i--) {
+      const j = Math.floor(rng() * (i + 1));
+      [options[i], options[j]] = [options[j], options[i]];
+    }
+    return { target, op, options };
+  }
+
+  /** Evaluate an equation string like "7+5", "12−3", "4×6", "18÷3". For tests. */
+  function evalEquation(text) {
+    const m = /^(\d+)([+−×÷])(\d+)$/.exec(text);
+    if (!m) return NaN;
+    const a = Number(m[1]); const b = Number(m[3]);
+    return m[2] === '+' ? a + b : m[2] === '−' ? a - b : m[2] === '×' ? a * b : a / b;
+  }
+  return { makeGate, evalEquation };
 })();
 
 /* ======================= FILE: spawner.js ======================= */
@@ -1419,9 +1819,11 @@ const __mod_spawner = (() => {
   // =============================================================================
 
   const { CONFIG } = __mod_config;
-  const { Token, PowerUp, Obstacle } = __mod_entities;
+  const { Token, PowerUp, Obstacle, Gate } = __mod_entities;
+  const { makeGate } = __mod_gate;
 
   const W = CONFIG.width;
+  const TAU = Math.PI * 2;
 
   class Spawner {
     /** @param {() => number} rng  injectable random source (tests pass a seeded one) */
@@ -1435,6 +1837,14 @@ const __mod_spawner = (() => {
       this.powerTimer = this._nextPowerTime();
       this.obstacleTimer = 7;   // grace period before the first rock or wall
       this.lifeTimer = this._nextLifeTime();
+      this.gateSeq = 0;
+      this.onStageStart();
+    }
+
+    /** Called at the start of every stage: formations and gates come a little later. */
+    onStageStart() {
+      this.formationTimer = CONFIG.formations.first;
+      this.gateTimer = CONFIG.gates.first;
     }
 
     _nextLifeTime() {
@@ -1455,13 +1865,17 @@ const __mod_spawner = (() => {
      * @param {PowerUp[]} powerups output list for new power-ups
      * @param {Obstacle[]} obstacles output list for new rocks and walls
      */
-    update(dt, stage, ctx, tokens, powerups, obstacles = []) {
+    update(dt, stage, ctx, tokens, powerups, obstacles = [], gates = []) {
+      const hold = Boolean(ctx.hold); // true during a boss fight: only power-ups and hearts drop
+
       // --- tokens: spawn faster as the stage progresses and as loops increase ---
-      this.timer -= dt;
-      if (this.timer <= 0) {
-        const interval = (stage.spawnInterval / ctx.difficulty) * (1 - 0.35 * ctx.intensity);
-        this.timer = interval * (0.7 + 0.6 * this.rng());
-        tokens.push(this._makeToken(this._pick(stage.table), stage, ctx.difficulty, ctx.playerX));
+      if (!hold) {
+        this.timer -= dt;
+        if (this.timer <= 0) {
+          const interval = (stage.spawnInterval / ctx.difficulty) * (1 - 0.35 * ctx.intensity);
+          this.timer = interval * (0.7 + 0.6 * this.rng());
+          tokens.push(this._makeToken(this._pick(stage.table), stage, ctx.difficulty, ctx.playerX));
+        }
       }
 
       // --- power-ups: rare, on their own timer ---------------------------------
@@ -1474,12 +1888,30 @@ const __mod_spawner = (() => {
       }
 
       // --- obstacles: orange rocks and walls that cost a life ------------------
-      if (stage.obstacles) {
+      if (stage.obstacles && !hold) {
         this.obstacleTimer -= dt;
         if (this.obstacleTimer <= 0) {
           const [lo, hi] = stage.obstacles.interval;
           this.obstacleTimer = (lo + (hi - lo) * this.rng()) / ctx.difficulty;
           obstacles.push(this._makeObstacle(stage, ctx));
+        }
+      }
+
+      // --- formations: V, row and ring waves -----------------------------------
+      if (!hold) {
+        this.formationTimer -= dt;
+        if (this.formationTimer <= 0) {
+          const [lo, hi] = CONFIG.formations.interval;
+          this.formationTimer = (lo + (hi - lo) * this.rng()) / ctx.difficulty;
+          if (ctx.intensity < 0.92) this._formation(stage, ctx, tokens);
+        }
+
+        // --- "MAKE N" gates: one puzzle at a time, never at the very end ------
+        this.gateTimer -= dt;
+        if (this.gateTimer <= 0) {
+          const [lo, hi] = CONFIG.gates.interval;
+          this.gateTimer = lo + (hi - lo) * this.rng();
+          if (gates.length === 0 && ctx.intensity < 0.8) this._makeGates(stage, ctx, gates);
         }
       }
 
@@ -1489,6 +1921,56 @@ const __mod_spawner = (() => {
         this.lifeTimer = this._nextLifeTime();
         if ((ctx.lives ?? CONFIG.maxLives) < CONFIG.maxLives) {
           powerups.push(new PowerUp('life', 40 + this.rng() * (W - 80)));
+        }
+      }
+    }
+
+    /** Three answer boxes for a MAKE-N puzzle. Only the first one carries the target. */
+    _makeGates(stage, ctx, gates) {
+      const puzzle = makeGate(stage.op, this.rng, ctx.stagesCleared || 0);
+      const setId = ++this.gateSeq;
+      const { w, h, speed } = CONFIG.gates;
+      const xs = [W * 0.17, W * 0.5, W * 0.83];
+      puzzle.options.forEach((o, i) => {
+        const g = new Gate({ x: xs[i], y: -h, w, h, text: o.text, value: o.value, correct: o.correct, setId, vy: speed });
+        g.target = puzzle.target;
+        gates.push(g);
+      });
+    }
+
+    /** A small wave of numbers in a pattern. Shooting them all is worth it, flying through is not. */
+    _formation(stage, ctx, tokens) {
+      const r = (a, b) => a + (b - a) * this.rng();
+      const ri = (a, b) => Math.floor(r(a, b + 1));
+      const speedUp = 0.9 + 0.1 * ctx.difficulty;
+      const kind = this._choice(stage.id >= 2 ? ['vee', 'row', 'ring'] : ['vee', 'row']);
+
+      if (kind === 'vee') {
+        // five small negatives in a V, tip first
+        const cx = r(120, W - 120);
+        for (let i = -2; i <= 2; i++) {
+          tokens.push(new Token({ kind: 'int', value: -ri(2, 4), x: cx + i * 52, y: -30 - Math.abs(i) * 34, vy: 105 * speedUp, hp: 1 }));
+        }
+      } else if (kind === 'row') {
+        // a row of pickups with one bomb hidden among them
+        const bad = ri(0, 4);
+        for (let i = 0; i < 5; i++) {
+          const value = i === bad ? -ri(3, 6) : ri(2, 8);
+          tokens.push(new Token({ kind: 'int', value, x: 60 + i * 90, y: -30, vy: 88 * speedUp, hp: 1 }));
+        }
+      } else {
+        // risk and reward: a juicy +9 guarded by six orbiting negatives
+        const cx = r(140, W - 140);
+        const vy = 64 * speedUp;
+        tokens.push(new Token({ kind: 'int', value: 9, x: cx, y: -60, vy }));
+        const w = (this.rng() < 0.5 ? -1 : 1) * 1.7;
+        for (let i = 0; i < 6; i++) {
+          const ang = (i / 6) * TAU;
+          const orbit = { cx, cy: -60, R: 66, ang, w };
+          tokens.push(new Token({
+            kind: 'int', value: -ri(2, 3), pattern: 'orbit', orbit, vy, hp: 1,
+            x: cx + Math.cos(ang) * 66, y: -60 + Math.sin(ang) * 66,
+          }));
         }
       }
     }
@@ -1581,6 +2063,9 @@ const __mod_spawner = (() => {
       } else if (roll < 0.45) {
         spec.pattern = 'drift';
         spec.vx = (this.rng() < 0.5 ? -1 : 1) * r(35, 80);
+      } else if (hostile && roll < 0.6 && stage.id >= 2) {
+        spec.pattern = 'zigzag';   // darts left and right
+        spec.zdir = this.rng() < 0.5 ? 1 : -1;
       }
 
       // Some hostile integers carry a gun and fire "-n" subtraction bullets.
@@ -1588,6 +2073,8 @@ const __mod_spawner = (() => {
         spec.shooter = { interval: r(1.3, 2.1) / Math.sqrt(difficulty), volley: stage.shooterVolley };
         spec.vy *= 0.65;           // shooters linger so you can see them
         spec.pattern = 'straight';
+      } else if (entry.kind === 'int' && spec.value <= -CONFIG.splitMinValue && stage.id >= 2 && this.rng() < 0.3) {
+        spec.splits = true;        // breaks into two smaller negatives when destroyed
       }
 
       return new Token(spec);
@@ -1749,6 +2236,418 @@ const __mod_leaderboard = (() => {
   return { cleanName, normalizeUrl, Leaderboard };
 })();
 
+/* ======================= FILE: ranked.js ======================= */
+const __mod_ranked = (() => {
+  // =============================================================================
+  // ranked.js  -  Ranked mode: weekly seasons, tiers and the one-row-per-name board.
+  //
+  //   * A SEASON is one ISO week (Monday to Sunday). Everybody in a season gets the
+  //     same seed, so the enemy sequence is the same for every player.
+  //   * A TIER is decided by your best score this season.
+  //   * The RANKED BOARD has ONE row per player NAME (typed by the player): their best
+  //     score of the season. It is saved on this phone, and optionally on the world board.
+  // =============================================================================
+
+  const { CONFIG } = __mod_config;
+  const { hash53 } = __mod_rng;
+  const { cleanName, normalizeUrl } = __mod_leaderboard;
+
+  /** '2026-W43' for the ISO week containing `date`. */
+  function seasonId(date = new Date()) {
+    const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+    const day = d.getUTCDay() || 7;                 // Monday = 1 ... Sunday = 7
+    d.setUTCDate(d.getUTCDate() + 4 - day);         // move to the Thursday of this week
+    const yearStart = Date.UTC(d.getUTCFullYear(), 0, 1);
+    const week = Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+    return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+  }
+
+  /** Number seed for a season id (same season = same seed on every phone). */
+  function seasonSeed(id) {
+    return parseInt(hash53(`season:${id}`).slice(-8), 16) | 0;
+  }
+
+  function tierFor(score) {
+    const tiers = CONFIG.ranked.tiers;
+    let t = tiers[0];
+    for (const x of tiers) if (score >= x.min) t = x;
+    return t;
+  }
+
+  /** The next tier above `score` (or null at the top) - for the "N to go" hint. */
+  function nextTier(score) {
+    return CONFIG.ranked.tiers.find((t) => t.min > score) || null;
+  }
+
+  function safeStorage() {
+    try { return globalThis.localStorage ?? null; } catch { return null; }
+  }
+
+  const isRow = (r) => r && typeof r.name === 'string' && Number.isFinite(r.score);
+  const nameKey = (n) => cleanName(n).toLowerCase();
+  const byScore = (a, b) => b.score - a.score || (a.t || 0) - (b.t || 0);
+  const tidy = (r) => ({
+    name: cleanName(r.name),
+    score: Math.round(r.score),
+    pilot: typeof r.pilot === 'string' ? r.pilot : '',
+    stage: Number.isFinite(r.stage) ? r.stage : 1,
+    t: Number.isFinite(r.t) ? r.t : 0,
+  });
+
+  class RankedBoard {
+    /** @param {{storage?, onlineUrl?, fetchFn?, now?: () => Date}} opts  (tests inject fakes) */
+    constructor(opts = {}) {
+      this.storage = opts.storage !== undefined ? opts.storage : safeStorage();
+      this.key = opts.key || CONFIG.ranked.storageKey;
+      this.size = opts.size || CONFIG.ranked.size;
+      this.onlineUrl = normalizeUrl(opts.onlineUrl ?? CONFIG.leaderboard.onlineUrl);
+      this.fetchFn = opts.fetchFn || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
+      this.now = opts.now || (() => new Date());
+      this.memory = {};
+    }
+
+    get season() { return seasonId(this.now()); }
+    get online() { return Boolean(this.onlineUrl && this.fetchFn); }
+
+    _load() {
+      if (this.storage) {
+        try {
+          const o = JSON.parse(this.storage.getItem(this.key) || '{}');
+          if (o && typeof o === 'object' && !Array.isArray(o)) return o;
+        } catch { /* corrupted: start fresh */ }
+        return {};
+      }
+      return this.memory;
+    }
+
+    _save(data) {
+      this.memory = data;
+      if (!this.storage) return;
+      try { this.storage.setItem(this.key, JSON.stringify(data)); } catch { /* full or blocked */ }
+    }
+
+    /** This season's rows on this phone: ONE per name, best first. */
+    localRows(season = this.season) {
+      const bucket = this._load()[season] || {};
+      return Object.entries(bucket)
+        .filter(([, r]) => isRow(r))
+        .map(([key, r]) => ({ key, ...tidy(r) }))
+        .sort(byScore)
+        .slice(0, this.size);
+    }
+
+    /** The best score a name has this season (0 if none). */
+    best(name, season = this.season) {
+      return this._load()[season]?.[nameKey(name)]?.score || 0;
+    }
+
+    /**
+     * Record a finished run. Keeps ONLY the best score per name.
+     * Returns { improved, row, rank, best, tier }.
+     */
+    submitLocal(entry) {
+      const season = this.season;
+      const key = nameKey(entry.name);
+      const data = this._load();
+      const bucket = (data[season] = data[season] || {});
+      const score = Math.round(entry.score);
+      const prev = bucket[key]?.score || 0;
+      const improved = score > prev;
+      if (improved || !bucket[key]) bucket[key] = tidy({ ...entry, score: Math.max(prev, score), t: Date.now() });
+      for (const s of Object.keys(data)) if (s !== season && Object.keys(data).length > 2) delete data[s];
+      this._save(data);
+      const rows = this.localRows(season);
+      const idx = rows.findIndex((r) => r.key === key);
+      const best = Math.max(prev, score);
+      return { improved, row: rows[idx] || null, rank: idx >= 0 ? idx + 1 : 0, best, tier: tierFor(best) };
+    }
+
+    // ---- world (optional Firebase board) -----------------------------------------
+
+    /** Send a score to the world board (ranked/<season>). Resolves true/false, never throws. */
+    async submitOnline(row) {
+      if (!this.online) return false;
+      try {
+        const res = await this.fetchFn(`${this.onlineUrl}/ranked/${this.season}.json`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(tidy(row)),
+        });
+        return Boolean(res && res.ok);
+      } catch { return false; }
+    }
+
+    /** Top scores of this season from the world board (best per name), or null if unreachable. */
+    async fetchOnline() {
+      if (!this.online) return null;
+      try {
+        const q = `orderBy=${encodeURIComponent('"score"')}&limitToLast=${this.size * 4}`;
+        const res = await this.fetchFn(`${this.onlineUrl}/ranked/${this.season}.json?${q}`);
+        if (!res || !res.ok) return null;
+        const data = await res.json();
+        if (!data || typeof data !== 'object') return [];
+        const best = new Map();
+        for (const r of Object.values(data).filter(isRow).map(tidy).sort(byScore)) {
+          const k = nameKey(r.name);
+          if (!best.has(k)) best.set(k, { key: k, ...r });
+        }
+        return [...best.values()].slice(0, this.size);
+      } catch { return null; }
+    }
+  }
+  return { seasonId, seasonSeed, tierFor, nextTier, nameKey, RankedBoard };
+})();
+
+/* ======================= FILE: combo.js ======================= */
+const __mod_combo = (() => {
+  // =============================================================================
+  // combo.js  -  chain counter. Kills and pickups within `window` seconds of each
+  // other build a combo; every `milestone` hits pays a flat bonus. Taking damage
+  // breaks the chain. Bonuses are flat (not multiplied) so they cannot snowball.
+  // =============================================================================
+
+  const { CONFIG } = __mod_config;
+
+  class Combo {
+    constructor(cfg = CONFIG.combo) {
+      this.cfg = cfg;
+      this.count = 0;
+      this.timer = 0;
+      this.best = 0;
+    }
+
+    /** One more hit. Returns a flat score bonus (0 unless a milestone was reached). */
+    add() {
+      this.count++;
+      this.timer = this.cfg.window;
+      this.best = Math.max(this.best, this.count);
+      if (this.count % this.cfg.milestone === 0) {
+        return Math.min(this.cfg.maxBonus, this.cfg.bonus * (this.count / this.cfg.milestone));
+      }
+      return 0;
+    }
+
+    tick(dt) {
+      if (this.count === 0) return;
+      this.timer -= dt;
+      if (this.timer <= 0) this.count = 0;
+    }
+
+    /** Damage taken: the chain is lost. Returns the count that was lost. */
+    reset() {
+      const lost = this.count;
+      this.count = 0;
+      this.timer = 0;
+      return lost;
+    }
+  }
+  return { Combo };
+})();
+
+/* ======================= FILE: boss.js ======================= */
+const __mod_boss = (() => {
+  // =============================================================================
+  // boss.js  -  one giant number at the end of every stage.
+  // You beat a boss by shooting its number down to 0. It only describes WHAT to
+  // fire (bullet specs); game.js turns those into real bullets and tokens.
+  // =============================================================================
+
+  const { CONFIG } = __mod_config;
+  const { drawText } = __mod_draw;
+
+  const W = CONFIG.width;
+  const TAU = Math.PI * 2;
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  /**
+   * Attack types:
+   *   fan    n bullets aimed at the player        { n, spread }
+   *   ring   n bullets in all directions          { n }
+   *   spiral a rotating stream for `dur` seconds  { dur }
+   *   rain   n bullets dropping from the top      { n }
+   *   summon spawn n hostile tokens               { n, kind }
+   */
+  const BOSSES = [
+    {
+      name: 'THE SUM', glyph: 'Σ', hue: 200, hp: 45, value: 3, reward: 80,
+      attacks: [{ type: 'fan', every: 2.0, n: 3, spread: 0.3 }],
+      phase2: [{ type: 'ring', every: 3.4, n: 10 }],
+    },
+    {
+      name: 'THE DIFFERENCE', glyph: '−', hue: 285, hp: 65, value: 4, reward: 120,
+      attacks: [{ type: 'fan', every: 1.9, n: 5, spread: 0.24 }],
+      phase2: [{ type: 'spiral', every: 5.5, dur: 2.2 }],
+    },
+    {
+      name: 'THE PRODUCT', glyph: '×', hue: 40, hp: 90, value: 4, reward: 160,
+      attacks: [{ type: 'summon', every: 3.8, n: 2, kind: 'zero' }, { type: 'fan', every: 2.2, n: 3, spread: 0.3 }],
+      phase2: [{ type: 'ring', every: 3.2, n: 12 }],
+    },
+    {
+      name: 'THE QUOTIENT', glyph: '÷', hue: 340, hp: 120, value: 5, reward: 220,
+      attacks: [{ type: 'fan', every: 2.0, n: 5, spread: 0.22 }, { type: 'rain', every: 3.0, n: 6 }],
+      phase2: [{ type: 'spiral', every: 6, dur: 2.4 }, { type: 'ring', every: 4, n: 14 }],
+    },
+  ];
+
+  class Boss {
+    /**
+     * @param {object} def   an entry of BOSSES
+     * @param {{difficulty?:number, stagesCleared?:number, rng?:()=>number}} o
+     */
+    constructor(def, o = {}) {
+      this.def = def;
+      this.rng = o.rng || Math.random;
+      const diff = o.difficulty || 1;
+      this.maxHp = Math.round(def.hp * (1 + 0.3 * (diff - 1)));
+      this.hp = this.maxHp;
+      this.value = def.value + Math.floor((o.stagesCleared || 0) / 2);
+      this.speedMul = 1 + 0.12 * (diff - 1);
+      this.x = W / 2;
+      this.y = -90;
+      this.homeY = 150;
+      this.radius = 44;
+      this.t = 0;
+      this.state = 'enter';       // 'enter' (cannot be hurt) -> 'fight'
+      this.fightTime = 0;
+      this.flash = 0;
+      this.dead = false;
+      this.phase = 1;
+      this.timers = def.attacks.map((a) => a.every * 0.7);
+      this.timers2 = def.phase2.map((a) => a.every * 0.5);
+      this.spiral = null;
+    }
+
+    get label() { return Math.ceil(this.hp); }
+    get hurtable() { return this.state === 'fight'; }
+    get ratio() { return clamp(this.hp / this.maxHp, 0, 1); }
+
+    /** Returns true if this hit killed the boss. */
+    hit(dmg) {
+      if (!this.hurtable || this.dead) return false;
+      this.hp -= dmg;
+      this.flash = 0.07;
+      if (this.hp <= 0) { this.hp = 0; this.dead = true; return true; }
+      if (this.phase === 1 && this.hp <= this.maxHp * 0.5) this.phase = 2;
+      return false;
+    }
+
+    /** Advance time. Returns a list of actions: { type:'bullets', list } | { type:'summon', n, kind }. */
+    update(dt, player) {
+      const actions = [];
+      this.t += dt;
+      if (this.flash > 0) this.flash -= dt;
+
+      if (this.state === 'enter') {
+        this.y += (this.homeY - this.y) * Math.min(1, dt * 2.2);
+        if (this.homeY - this.y < 4) { this.y = this.homeY; this.state = 'fight'; }
+        return actions;
+      }
+      this.fightTime += dt;
+      const amp = Math.min(150, W / 2 - this.radius - 10);
+      this.x = W / 2 + Math.sin(this.t * 0.9 * this.speedMul) * amp;
+      this.y = this.homeY + Math.sin(this.t * 1.7) * 14;
+
+      const rate = (this.phase === 2 ? 1.25 : 1) * this.speedMul;
+      this.def.attacks.forEach((a, i) => { this.timers[i] -= dt * rate; if (this.timers[i] <= 0) { this.timers[i] = a.every; this._fire(a, player, actions); } });
+      if (this.phase === 2) {
+        this.def.phase2.forEach((a, i) => { this.timers2[i] -= dt * rate; if (this.timers2[i] <= 0) { this.timers2[i] = a.every; this._fire(a, player, actions); } });
+      }
+
+      if (this.spiral) {
+        const s = this.spiral;
+        s.t -= dt;
+        s.acc += dt;
+        const list = [];
+        while (s.acc >= 0.11) {
+          s.acc -= 0.11;
+          s.ang += 0.5;
+          for (const k of [0, Math.PI]) list.push(this._bullet(s.ang + k, 150));
+        }
+        if (list.length) actions.push({ type: 'bullets', list });
+        if (s.t <= 0) this.spiral = null;
+      }
+      return actions;
+    }
+
+    _bullet(angle, speed) {
+      return { x: this.x, y: this.y + 20, vx: Math.sin(angle) * speed, vy: Math.cos(angle) * speed, value: this.value };
+    }
+
+    _fire(a, player, actions) {
+      const speed = 165 * (0.9 + 0.1 * this.speedMul);
+      switch (a.type) {
+        case 'fan': {
+          const aim = Math.atan2(player.x - this.x, player.y - this.y);
+          const list = [];
+          for (let i = 0; i < a.n; i++) list.push(this._bullet(aim + (i - (a.n - 1) / 2) * a.spread, speed));
+          actions.push({ type: 'bullets', list });
+          break;
+        }
+        case 'ring': {
+          const off = this.rng() * TAU;
+          const list = [];
+          for (let i = 0; i < a.n; i++) list.push(this._bullet(off + (i / a.n) * TAU, 135));
+          actions.push({ type: 'bullets', list });
+          break;
+        }
+        case 'spiral':
+          this.spiral = { t: a.dur, acc: 0, ang: this.rng() * TAU };
+          break;
+        case 'rain': {
+          const list = [];
+          for (let i = 0; i < a.n; i++) {
+            list.push({ x: 30 + this.rng() * (W - 60), y: 70, vx: 0, vy: 175 + this.rng() * 40, value: this.value });
+          }
+          actions.push({ type: 'bullets', list });
+          break;
+        }
+        case 'summon':
+          actions.push({ type: 'summon', n: a.n, kind: a.kind });
+          break;
+      }
+    }
+
+    draw(ctx) {
+      const d = this.def;
+      const hue = d.hue;
+      const col = this.flash > 0 ? '#ffffff' : `hsl(${hue},95%,62%)`;
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      if (this.state === 'enter') ctx.globalAlpha = 0.6;
+
+      // giant faint glyph behind the body
+      drawText(ctx, d.glyph, 0, 4, { size: 130, color: `hsla(${hue},90%,60%,0.16)` });
+
+      // hexagon body
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 24;
+      ctx.fillStyle = 'rgba(8,12,30,0.92)';
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TAU + this.t * 0.4;
+        const r = this.radius + (this.phase === 2 ? 4 * Math.sin(this.t * 9) : 0);
+        i ? ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r) : ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // inner ring (a second ring appears in phase 2)
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = `hsla(${hue},90%,70%,0.6)`;
+      ctx.beginPath();
+      ctx.arc(0, 0, this.radius * 0.72, 0, TAU);
+      ctx.stroke();
+
+      drawText(ctx, String(this.label), 0, 2, { size: this.label > 99 ? 28 : 34, color: '#ffffff', glow: 8 });
+      ctx.restore();
+    }
+  }
+  return { BOSSES, Boss };
+})();
+
 /* ======================= FILE: inapp.js ======================= */
 const __mod_inapp = (() => {
   // =============================================================================
@@ -1815,6 +2714,7 @@ const __mod_ui = (() => {
   const { STAGES } = __mod_stages;
   const { drawText, drawShip, drawHeart, pathRoundRect } = __mod_draw;
   const { POWERUP_INFO, COLORS } = __mod_entities;
+  const { tierFor, nextTier } = __mod_ranked;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -1833,6 +2733,27 @@ const __mod_ui = (() => {
     ctx.shadowBlur = 0;
     drawText(ctx, label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1, { size: 17, color });
     return rect;
+  }
+
+  /** A little speaker icon: waves when sound is on, a cross when it is muted. */
+  function drawSpeaker(ctx, cx, cy, on, color) {
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx - 9, cy - 4); ctx.lineTo(cx - 4, cy - 4); ctx.lineTo(cx + 2, cy - 9);
+    ctx.lineTo(cx + 2, cy + 9); ctx.lineTo(cx - 4, cy + 4); ctx.lineTo(cx - 9, cy + 4);
+    ctx.closePath();
+    ctx.fill();
+    if (on) {
+      ctx.beginPath(); ctx.arc(cx + 3, cy, 6, -0.9, 0.9); ctx.stroke();
+      ctx.beginPath(); ctx.arc(cx + 3, cy, 11, -0.9, 0.9); ctx.stroke();
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(cx + 6, cy - 6); ctx.lineTo(cx + 14, cy + 6);
+      ctx.moveTo(cx + 14, cy - 6); ctx.lineTo(cx + 6, cy + 6);
+      ctx.stroke();
+    }
   }
 
   // -----------------------------------------------------------------------------
@@ -1854,9 +2775,10 @@ const __mod_ui = (() => {
 
     drawText(ctx, `${stage.op}  ${stage.name}`, W / 2 + 10, 13, { size: 11, color: `hsl(${stage.hue},90%,70%)` });
     const prog = clamp(game.stageTime / CONFIG.stageDuration, 0, 1);
+    const bossPhase = game.phase !== 'stage';
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
     ctx.fillRect(W / 2 - 60, 24, 140, 4);
-    ctx.fillStyle = `hsl(${stage.hue},90%,60%)`;
+    ctx.fillStyle = bossPhase ? COLORS.bad : `hsl(${stage.hue},90%,60%)`;
     ctx.fillRect(W / 2 - 60, 24, 140 * prog, 4);
 
     // Lives: filled heart = life left, faint outline = life lost
@@ -1867,7 +2789,8 @@ const __mod_ui = (() => {
     const m = r.effectiveMultiplier;
     drawText(ctx, 'MULT', W - 14, 13, { size: 10, align: 'right', color: '#8fb3d9' });
     drawText(ctx, `×${m}`, W - 14, 37, {
-      size: 26, align: 'right', color: m > 1 ? COLORS.gold : '#5b7497', glow: m > 1 ? 10 : 0,
+      size: 26 + Math.round(8 * Math.min(1, game.multPulse)), align: 'right',
+      color: m > 1 ? COLORS.gold : '#5b7497', glow: m > 1 ? 10 + 14 * Math.min(1, game.multPulse) : 0,
     });
     if (r.squareActive) {
       drawText(ctx, `(${r.multiplier}²)`, W - 80, 37, { size: 12, align: 'right', color: POWERUP_INFO.sq.color });
@@ -1900,6 +2823,14 @@ const __mod_ui = (() => {
       ctx.fill();
       ctx.stroke();
       drawText(ctx, 'II', p.x + p.w / 2, p.y + p.h / 2, { size: 18, color: '#8fb3d9' });
+
+      const mu = CONFIG.touch.mute;
+      ctx.fillStyle = 'rgba(10,18,40,0.75)';
+      ctx.strokeStyle = '#8fb3d9';
+      pathRoundRect(ctx, mu.x, mu.y, mu.w, mu.h, 10);
+      ctx.fill();
+      ctx.stroke();
+      drawSpeaker(ctx, mu.x + mu.w / 2 - 3, mu.y + mu.h / 2, !game.sfx.muted, '#8fb3d9');
     } else {
       drawText(ctx, `PRIME BOMB [B]  ×${game.bombs}`, 12, H - 16, { size: 13, align: 'left', color: bombColor });
     }
@@ -1913,9 +2844,54 @@ const __mod_ui = (() => {
       ctx.fillStyle = 'rgba(255,255,255,0.12)';
       ctx.fillRect(W - 72, y - 4, 60, 6);
       ctx.fillStyle = info.color;
-      ctx.fillRect(W - 72, y - 4, 60 * (left / CONFIG.powerupDuration[kind]), 6);
+      ctx.fillRect(W - 72, y - 4, 60 * clamp(left / (CONFIG.powerupDuration[kind] * r.mods.powerTime), 0, 1), 6);
       drawText(ctx, info.glyph, W - 80, y - 1, { size: 15, align: 'right', color: info.color });
       y -= 22;
+    }
+
+    // Boss health bar: the boss is a number, and the bar is how much of it is left
+    if (game.boss) {
+      const b = game.boss;
+      const x = 14;
+      const w = 336; // stops before the sound and pause buttons
+      ctx.fillStyle = 'rgba(0,0,0,0.5)';
+      ctx.fillRect(x - 2, 62, w + 4, 14);
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      ctx.fillRect(x, 64, w, 10);
+      ctx.fillStyle = b.phase === 2 ? COLORS.bad : `hsl(${b.def.hue},90%,60%)`;
+      ctx.fillRect(x, 64, w * b.ratio, 10);
+      drawText(ctx, `${b.def.name}  ${b.label}`, x + w / 2, 90, { size: 12, color: '#ffffff', glow: 6 });
+      if (!b.hurtable) drawText(ctx, 'SHIELDED', x + w / 2, 108, { size: 11, color: '#9fb6d8' });
+    }
+
+    // MAKE-N banner
+    const target = game.gateTarget;
+    if (target !== null && !game.boss) {
+      const pulse = 0.85 + 0.15 * Math.sin(game.time * 8);
+      ctx.fillStyle = 'rgba(8,24,52,0.9)';
+      ctx.strokeStyle = COLORS.cyan;
+      ctx.lineWidth = 3;
+      ctx.shadowColor = COLORS.cyan;
+      ctx.shadowBlur = 14 * pulse;
+      pathRoundRect(ctx, W / 2 - 92, 64, 184, 38, 12);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      drawText(ctx, `MAKE  ${target}`, W / 2, 84, { size: 24, color: '#ffffff', glow: 8 });
+    }
+
+    // Combo meter
+    if (game.combo.count >= 3) {
+      const k = clamp(game.combo.timer / game.combo.cfg.window, 0, 1);
+      drawText(ctx, `COMBO ×${game.combo.count}`, 14, 76, { size: 16, align: 'left', color: COLORS.gold, glow: 8 });
+      ctx.fillStyle = 'rgba(255,255,255,0.15)';
+      ctx.fillRect(14, 88, 90, 4);
+      ctx.fillStyle = COLORS.gold;
+      ctx.fillRect(14, 88, 90 * k, 4);
+    }
+
+    if (game.mode === 'ranked') {
+      drawText(ctx, `RANKED  ${game.season}`, W / 2, H - 12, { size: 10, color: '#6f86ad' });
     }
   }
 
@@ -1929,6 +2905,16 @@ const __mod_ui = (() => {
     const a = clamp(Math.min(b.t / 0.3, (b.dur - b.t) / 0.5), 0, 1);
     const loop = Math.floor(game.stageIndex / STAGES.length);
 
+    if (b.boss) {
+      ctx.globalAlpha = a;
+      const flash = Math.floor(b.t * 6) % 2 === 0;
+      drawText(ctx, 'WARNING', W / 2, H / 2 - 20, { size: 18, color: flash ? COLORS.bad : '#ffffff', glow: 14 });
+      drawText(ctx, b.boss.name, W / 2, H / 2 + 20, { size: 32, color: `hsl(${b.boss.hue},95%,68%)`, glow: 20 });
+      drawText(ctx, 'Shoot its number down to 0', W / 2, H / 2 + 54, { size: 13, color: '#b9c9e6', weight: 'normal' });
+      ctx.globalAlpha = 1;
+      return;
+    }
+
     ctx.globalAlpha = a;
     drawText(ctx, `STAGE ${stage.id}${loop > 0 ? `  ·  LOOP ${loop + 1}` : ''}`, W / 2, H / 2 - 80, { size: 16, color: '#9fb6d8' });
     drawText(ctx, stage.op, W / 2, H / 2 - 20, { size: 90, color: `hsl(${stage.hue},95%,65%)`, glow: 26 });
@@ -1938,19 +2924,54 @@ const __mod_ui = (() => {
   }
 
   // -----------------------------------------------------------------------------
-  // Title / character select
+  // Title / mode / character select
   // -----------------------------------------------------------------------------
   function drawMenu(ctx, game) {
-    drawText(ctx, 'MATH', W / 2, 78, { size: 52, color: '#4dd2ff', glow: 24 });
-    drawText(ctx, 'STRIKER', W / 2, 128, { size: 52, color: '#ff6bd6', glow: 24 });
-    drawText(ctx, 'a shoot-’em-up inside a quantum computer', W / 2, 160, { size: 12, color: '#8fb3d9', weight: 'normal' });
+    drawText(ctx, 'MATH', W / 2, 56, { size: 48, color: '#4dd2ff', glow: 24 });
+    drawText(ctx, 'STRIKER', W / 2, 102, { size: 48, color: '#ff6bd6', glow: 24 });
+    drawText(ctx, 'a shoot-’em-up inside a quantum computer', W / 2, 132, { size: 12, color: '#8fb3d9', weight: 'normal' });
+
+    game.menuButtons = [];
+    const ranked = game.mode === 'ranked';
+
+    // Sound switch (top right)
+    const mu = { x: W - 58, y: 14, w: 44, h: 36 };
+    ctx.strokeStyle = 'rgba(143,179,217,0.5)';
+    ctx.lineWidth = 1.5;
+    pathRoundRect(ctx, mu.x, mu.y, mu.w, mu.h, 9);
+    ctx.stroke();
+    drawSpeaker(ctx, mu.x + mu.w / 2 - 3, mu.y + mu.h / 2, !game.sfx.muted, '#8fb3d9');
+    game.menuButtons.push({ id: 'mute', ...mu });
+
+    // Mode switch: CLASSIC | RANKED
+    [['mode-classic', 'CLASSIC', W / 2 - 160, '#4dd2ff'], ['mode-ranked', 'RANKED', W / 2 + 5, '#ffd75e']].forEach(([id, label, x, col]) => {
+      const active = (id === 'mode-ranked') === ranked;
+      const rect = { x, y: 152, w: 155, h: 36 };
+      ctx.fillStyle = active ? 'rgba(255,255,255,0.12)' : 'rgba(10,20,44,0.7)';
+      ctx.strokeStyle = active ? col : 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = active ? 3 : 1.5;
+      if (active) { ctx.shadowColor = col; ctx.shadowBlur = 14; }
+      pathRoundRect(ctx, rect.x, rect.y, rect.w, rect.h, 11);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      drawText(ctx, label, x + rect.w / 2, rect.y + rect.h / 2 + 1, { size: 17, color: active ? col : '#6f86ad', glow: active ? 8 : 0 });
+      game.menuButtons.push({ id, ...rect });
+    });
+
+    if (!ranked) {
+      drawText(ctx, 'Relaxed endless run  ·  classic boards', W / 2, 206, { size: 12, color: '#9fb6d8', weight: 'normal' });
+    } else {
+      drawText(ctx, `Season ${game.rankedBoard.season}  ·  same enemies for everyone  ·  tiers`, W / 2, 206, { size: 11, color: COLORS.gold, weight: 'normal' });
+      drawText(ctx, `Your best: ${tierFor(game.rankedBoard.best(game.leaderboard.lastName)).name}`, W / 2, 224, { size: 12, color: '#9fb6d8', weight: 'normal' });
+    }
 
     game.cardRects = [];
     const cw = 205;
-    const ch = 330;
+    const ch = 282;
     const gap = 20;
     const x0 = (W - (cw * 2 + gap)) / 2;
-    const y0 = 190;
+    const y0 = 252;
 
     CHARACTERS.forEach((c, i) => {
       const x = x0 + i * (cw + gap);
@@ -1966,17 +2987,16 @@ const __mod_ui = (() => {
       ctx.stroke();
       ctx.shadowBlur = 0;
 
-      drawShip(ctx, c, x + cw / 2, y0 + 78, selected ? 1.5 + 0.05 * Math.sin(game.time * 4) : 1.3, game.time);
-      drawText(ctx, c.name, x + cw / 2, y0 + 138, { size: 22, color: c.color, glow: selected ? 10 : 0 });
-      drawText(ctx, c.role, x + cw / 2, y0 + 160, { size: 11, color: '#8fb3d9', weight: 'normal' });
+      drawShip(ctx, c, x + cw / 2, y0 + 56, selected ? 1.4 + 0.05 * Math.sin(game.time * 4) : 1.2, game.time);
+      drawText(ctx, c.name, x + cw / 2, y0 + 106, { size: 21, color: c.color, glow: selected ? 10 : 0 });
+      drawText(ctx, c.role, x + cw / 2, y0 + 126, { size: 11, color: '#8fb3d9', weight: 'normal' });
 
       c.blurb.forEach((line, li) => {
-        drawText(ctx, line, x + cw / 2, y0 + 186 + li * 16, { size: 12, color: '#d3e0f5', weight: 'normal' });
+        drawText(ctx, line, x + cw / 2, y0 + 148 + li * 15, { size: 12, color: '#d3e0f5', weight: 'normal' });
       });
 
-      // Stat pips
       Object.entries(c.stats).forEach(([label, val], si) => {
-        const sy = y0 + 262 + si * 17;
+        const sy = y0 + 224 + si * 17;
         drawText(ctx, label, x + 14, sy, { size: 11, align: 'left', color: '#8fb3d9' });
         for (let p = 0; p < 5; p++) {
           ctx.fillStyle = p < val ? c.color : 'rgba(255,255,255,0.14)';
@@ -1987,18 +3007,16 @@ const __mod_ui = (() => {
 
     const pulse = 0.65 + 0.35 * Math.sin(game.time * 4);
     ctx.globalAlpha = pulse;
-    drawText(ctx, 'TAP A PILOT TO START', W / 2, 543, { size: 14, color: '#ffffff', glow: 8 });
+    drawText(ctx, 'TAP A PILOT TO START', W / 2, 552, { size: 14, color: '#ffffff', glow: 8 });
     ctx.globalAlpha = 1;
 
-    game.menuButtons = [
-      { id: 'board', ...drawButton(ctx, { x: W / 2 - 105, y: 558, w: 210, h: 42 }, 'LEADERBOARD', COLORS.gold) },
-    ];
+    game.menuButtons.push({ id: 'board', ...drawButton(ctx, { x: W / 2 - 105, y: 566, w: 210, h: 40 }, 'LEADERBOARD', COLORS.gold) });
 
-    drawText(ctx, 'DRAG to fly  ·  auto-fire  ·  tap BOMB for a Prime Bomb', W / 2, 624, { size: 12, color: '#b9c9e6', weight: 'normal' });
-    drawText(ctx, `Orange rocks and walls cost a LIFE. You have ${CONFIG.maxLives}.`, W / 2, 644, { size: 12, color: COLORS.hazard, weight: 'normal' });
-    drawText(ctx, 'Your SCORE is your health. Hit 0 and you are deleted.', W / 2, 666, { size: 12, color: COLORS.gold, weight: 'normal' });
+    drawText(ctx, 'DRAG to fly  ·  auto-fire  ·  BOMB = Prime Bomb', W / 2, 630, { size: 12, color: '#b9c9e6', weight: 'normal' });
+    drawText(ctx, `Rocks, walls and wrong gates cost a LIFE (you have ${CONFIG.maxLives}).`, W / 2, 650, { size: 12, color: COLORS.hazard, weight: 'normal' });
+    drawText(ctx, 'Your SCORE is your health. Beat a boss to level up.', W / 2, 670, { size: 12, color: COLORS.gold, weight: 'normal' });
     if (game.highScore > 0) {
-      drawText(ctx, `BEST  ${game.highScore}`, W / 2, 692, { size: 12, color: '#8fb3d9' });
+      drawText(ctx, `BEST  ${game.highScore}`, W / 2, 698, { size: 12, color: '#8fb3d9' });
     }
   }
 
@@ -2012,9 +3030,50 @@ const __mod_ui = (() => {
     drawText(ctx, 'tap anywhere to resume', W / 2, H / 2 + 22, { size: 14, color: '#9fb6d8', weight: 'normal' });
   }
 
+  /** "Pick 1 of 3" upgrade cards after a boss. */
+  function drawUpgrade(ctx, game) {
+    ctx.fillStyle = 'rgba(2,6,16,0.82)';
+    ctx.fillRect(0, 0, W, H);
+    drawText(ctx, 'BOSS DEFEATED', W / 2, 92, { size: 30, color: COLORS.gold, glow: 16 });
+    drawText(ctx, 'CHOOSE 1 UPGRADE', W / 2, 128, { size: 15, color: '#cfe0ff' });
+
+    game.upgradeRects = [];
+    const colors = [COLORS.cyan, COLORS.pink, COLORS.good];
+    game.upgradeCards.forEach((card, i) => {
+      const rect = { x: 30, y: 158 + i * 132, w: W - 60, h: 116 };
+      const col = colors[i % colors.length];
+      const wobble = 1 + 0.01 * Math.sin(game.time * 3 + i);
+      ctx.save();
+      ctx.translate(rect.x + rect.w / 2, rect.y + rect.h / 2);
+      ctx.scale(wobble, wobble);
+      ctx.translate(-(rect.x + rect.w / 2), -(rect.y + rect.h / 2));
+      ctx.fillStyle = 'rgba(12,26,56,0.95)';
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 3;
+      ctx.shadowColor = col;
+      ctx.shadowBlur = 16;
+      pathRoundRect(ctx, rect.x, rect.y, rect.w, rect.h, 16);
+      ctx.fill();
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+      drawText(ctx, String(i + 1), rect.x + 22, rect.y + 20, { size: 13, color: '#6f86ad' });
+      drawText(ctx, card.icon, rect.x + 62, rect.y + rect.h / 2, { size: 44, color: col, glow: 12 });
+      drawText(ctx, card.name, rect.x + 110, rect.y + 40, { size: 22, align: 'left', color: '#ffffff' });
+      drawText(ctx, card.desc, rect.x + 110, rect.y + 74, { size: 13, align: 'left', color: '#b9c9e6', weight: 'normal' });
+      const have = game.owned[card.id] || 0;
+      if (have > 0 && card.max < 99) {
+        drawText(ctx, `LEVEL ${have} → ${have + 1}`, rect.x + rect.w - 16, rect.y + 20, { size: 11, align: 'right', color: col });
+      }
+      ctx.restore();
+      game.upgradeRects.push(rect);
+    });
+    drawText(ctx, 'tap a card', W / 2, 588, { size: 13, color: '#9fb6d8', weight: 'normal' });
+  }
+
   function drawGameOver(ctx, game) {
     ctx.fillStyle = 'rgba(2,6,16,0.84)';
     ctx.fillRect(0, 0, W, H);
+    const ranked = game.mode === 'ranked';
 
     if (game.deathReason === 'lives') {
       drawText(ctx, 'OUT OF LIVES', W / 2, 150, { size: 20, color: COLORS.hazard });
@@ -2024,65 +3083,89 @@ const __mod_ui = (() => {
     }
     drawText(ctx, 'GAME OVER', W / 2, 232, { size: 46, color: COLORS.bad, glow: 20 });
 
-    drawText(ctx, 'BEST SCORE REACHED', W / 2, 296, { size: 12, color: '#8fb3d9' });
-    drawText(ctx, String(Math.round(game.peakScore)), W / 2, 334, { size: 38, color: '#ffffff', glow: 10 });
-    if (game.newBest) drawText(ctx, 'NEW HIGH SCORE!', W / 2, 368, { size: 16, color: COLORS.gold, glow: 10 });
-    else drawText(ctx, `HIGH SCORE  ${game.highScore}`, W / 2, 368, { size: 13, color: '#8fb3d9' });
+    drawText(ctx, ranked ? `RANKED RUN  ·  ${game.season}` : 'BEST SCORE REACHED', W / 2, 288, { size: 12, color: ranked ? COLORS.gold : '#8fb3d9' });
+    drawText(ctx, String(Math.round(game.peakScore)), W / 2, 326, { size: 38, color: '#ffffff', glow: 10 });
 
     const mins = Math.floor(game.runTime / 60);
     const secs = Math.floor(game.runTime % 60).toString().padStart(2, '0');
-    drawText(ctx, `survived ${mins}:${secs}  ·  reached stage ${game.stageIndex + 1}`, W / 2, 396, {
-      size: 12, color: '#9fb6d8', weight: 'normal',
-    });
-    if (game.lastRow && game.lastRow.rank > 0) {
-      drawText(ctx, `You are #${game.lastRow.rank} on this phone`, W / 2, 420, { size: 13, color: COLORS.gold });
+
+    if (ranked) {
+      const r = game.rankedResult;
+      if (!r) {
+        drawText(ctx, game.nameEntry ? 'Type your name…' : 'Score not saved (no name entered).', W / 2, 372, { size: 14, color: '#9fb6d8' });
+      } else {
+        drawText(ctx, r.tier.name, W / 2, 368, { size: 26, color: r.tier.color, glow: 14 });
+        drawText(ctx, `${r.name}  ·  SEASON BEST ${r.best}${r.improved ? '  NEW!' : ''}`, W / 2, 396, { size: 14, color: r.improved ? COLORS.gold : '#cfe0ff' });
+        const nt = nextTier(r.best);
+        if (nt) drawText(ctx, `${nt.min - r.best} more for ${nt.name}`, W / 2, 418, { size: 12, color: nt.color, weight: 'normal' });
+        else drawText(ctx, 'TOP TIER REACHED', W / 2, 418, { size: 12, color: COLORS.gold });
+        if (r.rank > 0) drawText(ctx, `#${r.rank} this season on this phone`, W / 2, 442, { size: 11, color: '#9fb6d8', weight: 'normal' });
+      }
+    } else {
+      if (game.newBest) drawText(ctx, 'NEW HIGH SCORE!', W / 2, 368, { size: 16, color: COLORS.gold, glow: 10 });
+      else drawText(ctx, `HIGH SCORE  ${game.highScore}`, W / 2, 368, { size: 13, color: '#8fb3d9' });
+      drawText(ctx, `survived ${mins}:${secs}  ·  reached stage ${game.stageIndex + 1}  ·  bosses ${game.bossesDefeated}`, W / 2, 396, {
+        size: 12, color: '#9fb6d8', weight: 'normal',
+      });
+      if (game.lastRow && game.lastRow.rank > 0) {
+        drawText(ctx, `You are #${game.lastRow.rank} on this phone`, W / 2, 420, { size: 13, color: COLORS.gold });
+      }
     }
 
     game.goButtons = [];
     if (game.stateTime > 0.8 && !game.nameEntry) {
       const bx = W / 2 - 120;
       game.goButtons = [
-        { id: 'again', ...drawButton(ctx, { x: bx, y: 462, w: 240, h: 46 }, 'PLAY AGAIN', '#ffffff') },
-        { id: 'board', ...drawButton(ctx, { x: bx, y: 520, w: 240, h: 46 }, 'LEADERBOARD', COLORS.gold) },
-        { id: 'menu', ...drawButton(ctx, { x: bx, y: 578, w: 240, h: 46 }, 'CHANGE PILOT', '#8fb3d9') },
+        { id: 'again', ...drawButton(ctx, { x: bx, y: 466, w: 240, h: 46 }, 'PLAY AGAIN', '#ffffff') },
+        { id: 'board', ...drawButton(ctx, { x: bx, y: 524, w: 240, h: 46 }, 'LEADERBOARD', COLORS.gold) },
+        { id: 'menu', ...drawButton(ctx, { x: bx, y: 582, w: 240, h: 46 }, 'MENU', '#8fb3d9') },
       ];
     }
   }
 
   // -----------------------------------------------------------------------------
-  // Leaderboard screen: top 10 on this phone, plus a WORLD tab when an online
-  // database is configured (CONFIG.leaderboard.onlineUrl).
+  // Leaderboard screen. Tabs:
+  //   PHONE   classic top 10 saved on this phone
+  //   WORLD   classic top 10 from everybody (only when an online database is set up)
+  //   RANKED  this season, ONE row per name, with tiers
   // -----------------------------------------------------------------------------
   function drawLeaderboard(ctx, game) {
     const v = game.lbView;
     const lb = game.leaderboard;
     game.lbButtons = [];
 
-    drawText(ctx, 'LEADERBOARD', W / 2, 56, { size: 32, color: COLORS.gold, glow: 16 });
+    drawText(ctx, 'LEADERBOARD', W / 2, 52, { size: 30, color: COLORS.gold, glow: 16 });
 
-    const tab = lb.online ? v.tab : 'device';
-    if (lb.online) {
-      [['tab-device', 'THIS PHONE', W / 2 - 165], ['tab-world', 'WORLD', W / 2 + 5]].forEach(([id, label, x]) => {
-        const active = (id === 'tab-world') === (tab === 'world');
-        const rect = { x, y: 88, w: 160, h: 34 };
-        ctx.fillStyle = active ? 'rgba(255,215,94,0.2)' : 'rgba(10,20,44,0.7)';
-        ctx.strokeStyle = active ? COLORS.gold : 'rgba(255,255,255,0.2)';
-        ctx.lineWidth = 2;
-        pathRoundRect(ctx, rect.x, rect.y, rect.w, rect.h, 10);
-        ctx.fill();
-        ctx.stroke();
-        drawText(ctx, label, x + 80, 106, { size: 14, color: active ? COLORS.gold : '#8fb3d9' });
-        game.lbButtons.push({ id, ...rect });
-      });
-    } else {
-      drawText(ctx, 'top 10 saved on this phone', W / 2, 100, { size: 12, color: '#8fb3d9', weight: 'normal' });
-    }
+    const tabs = [['device', 'PHONE']];
+    if (lb.online) tabs.push(['world', 'WORLD']);
+    tabs.push(['ranked', 'RANKED']);
+    const tab = tabs.some(([id]) => id === v.tab) ? v.tab : 'device';
+    const tw = (W - 44 - 10 * (tabs.length - 1)) / tabs.length;
+    tabs.forEach(([id, label], i) => {
+      const rect = { x: 22 + i * (tw + 10), y: 80, w: tw, h: 34 };
+      const active = id === tab;
+      ctx.fillStyle = active ? 'rgba(255,215,94,0.2)' : 'rgba(10,20,44,0.7)';
+      ctx.strokeStyle = active ? COLORS.gold : 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = 2;
+      pathRoundRect(ctx, rect.x, rect.y, rect.w, rect.h, 10);
+      ctx.fill();
+      ctx.stroke();
+      drawText(ctx, label, rect.x + rect.w / 2, rect.y + 18, { size: 14, color: active ? COLORS.gold : '#8fb3d9' });
+      game.lbButtons.push({ id: `tab-${id}`, ...rect });
+    });
 
     let rows;
     let status = 'ok';
-    if (tab === 'world') { rows = v.online.rows; status = v.online.status; } else { rows = lb.rows(); }
+    let caption = '';
+    if (tab === 'world') { rows = v.online.rows; status = v.online.status; caption = 'everybody, all time'; }
+    else if (tab === 'ranked') {
+      const rb = game.rankedBoard;
+      if (rb.online) { rows = v.ranked.rows; status = v.ranked.status; caption = `season ${rb.season}  ·  one row per name`; }
+      else { rows = rb.localRows(); caption = `season ${rb.season}  ·  one row per name  ·  this phone`; }
+    } else { rows = lb.rows(); caption = 'top 10 saved on this phone'; }
+    drawText(ctx, caption, W / 2, 134, { size: 11, color: '#8fb3d9', weight: 'normal' });
 
-    const y0 = 152;
+    const y0 = 170;
     const step = 40;
     if (status === 'loading' || status === 'idle') {
       drawText(ctx, 'Loading...', W / 2, 300, { size: 18, color: '#9fb6d8' });
@@ -2091,45 +3174,59 @@ const __mod_ui = (() => {
       drawText(ctx, 'Check your internet and try again later.', W / 2, 318, { size: 12, color: '#9fb6d8', weight: 'normal' });
     } else if (rows.length === 0) {
       drawText(ctx, 'No scores yet.', W / 2, 290, { size: 20, color: '#e8f0ff' });
-      drawText(ctx, 'Be the first on the board!', W / 2, 322, { size: 13, color: '#9fb6d8', weight: 'normal' });
+      drawText(ctx, tab === 'ranked' ? 'Play RANKED to claim the first spot!' : 'Be the first on the board!', W / 2, 322, { size: 13, color: '#9fb6d8', weight: 'normal' });
     } else {
       rows.forEach((r, i) => {
         const y = y0 + i * step;
-        const hl = v.highlight && r.t === v.highlight.t && r.score === v.highlight.score && r.name === v.highlight.name;
-        if (hl) {
+        const mine = tab === 'ranked'
+          ? Boolean(game.rankedResult) && r.key === game.rankedResult.row?.key
+          : Boolean(v.highlight) && r.t === v.highlight.t && r.score === v.highlight.score && r.name === v.highlight.name;
+        if (mine) {
           ctx.fillStyle = 'rgba(255,215,94,0.2)';
           ctx.strokeStyle = COLORS.gold;
           ctx.lineWidth = 2;
-          pathRoundRect(ctx, 22, y - 17, W - 44, 34, 9);
+          pathRoundRect(ctx, 22, y - 18, W - 44, 36, 9);
           ctx.fill();
           ctx.stroke();
         } else if (i % 2 === 0) {
           ctx.fillStyle = 'rgba(255,255,255,0.045)';
-          pathRoundRect(ctx, 22, y - 17, W - 44, 34, 9);
+          pathRoundRect(ctx, 22, y - 18, W - 44, 36, 9);
           ctx.fill();
         }
         const medal = ['#ffd75e', '#d6dde8', '#d79b64'][i] || '#8fb3d9';
-        const dot = CHARACTERS.find((c) => c.id === r.pilot)?.color || '#8fb3d9';
         drawText(ctx, String(i + 1), 52, y, { size: 18, color: medal, align: 'right' });
-        ctx.fillStyle = dot;
-        ctx.beginPath();
-        ctx.arc(72, y, 6, 0, Math.PI * 2);
-        ctx.fill();
-        drawText(ctx, r.name, 90, y, { size: 17, color: hl ? COLORS.gold : '#e8f0ff', align: 'left' });
-        drawText(ctx, String(r.score), W - 40, y, { size: 18, color: hl ? COLORS.gold : '#ffffff', align: 'right' });
+        if (tab === 'ranked') {
+          const tier = tierFor(r.score);
+          ctx.fillStyle = tier.color;
+          ctx.beginPath();
+          ctx.arc(72, y, 6, 0, Math.PI * 2);
+          ctx.fill();
+          drawText(ctx, r.name, 90, y - 6, { size: 16, color: mine ? COLORS.gold : '#e8f0ff', align: 'left' });
+          drawText(ctx, CHARACTERS.find((c) => c.id === r.pilot)?.name || '', 90, y + 10, { size: 10, color: '#7f94b8', align: 'left', weight: 'normal' });
+          drawText(ctx, String(r.score), W - 40, y - 6, { size: 18, color: mine ? COLORS.gold : '#ffffff', align: 'right' });
+          drawText(ctx, tier.name, W - 40, y + 10, { size: 10, color: tier.color, align: 'right' });
+        } else {
+          const dot = CHARACTERS.find((c) => c.id === r.pilot)?.color || '#8fb3d9';
+          ctx.fillStyle = dot;
+          ctx.beginPath();
+          ctx.arc(72, y, 6, 0, Math.PI * 2);
+          ctx.fill();
+          drawText(ctx, r.name, 90, y, { size: 17, color: mine ? COLORS.gold : '#e8f0ff', align: 'left' });
+          drawText(ctx, String(r.score), W - 40, y, { size: 18, color: mine ? COLORS.gold : '#ffffff', align: 'right' });
+        }
       });
     }
 
     if (v.from === 'gameover') {
       game.lbButtons.push(
-        { id: 'again', ...drawButton(ctx, { x: W / 2 - 175, y: 600, w: 170, h: 48 }, 'PLAY AGAIN', '#ffffff') },
-        { id: 'menu', ...drawButton(ctx, { x: W / 2 + 5, y: 600, w: 170, h: 48 }, 'MENU', '#8fb3d9') },
+        { id: 'again', ...drawButton(ctx, { x: W / 2 - 175, y: 606, w: 170, h: 48 }, 'PLAY AGAIN', '#ffffff') },
+        { id: 'menu', ...drawButton(ctx, { x: W / 2 + 5, y: 606, w: 170, h: 48 }, 'MENU', '#8fb3d9') },
       );
     } else {
-      game.lbButtons.push({ id: 'back', ...drawButton(ctx, { x: W / 2 - 100, y: 600, w: 200, h: 48 }, 'BACK', '#ffffff') });
+      game.lbButtons.push({ id: 'back', ...drawButton(ctx, { x: W / 2 - 100, y: 606, w: 200, h: 48 }, 'BACK', '#ffffff') });
     }
   }
-  return { drawHUD, drawBanner, drawMenu, drawPause, drawGameOver, drawLeaderboard };
+  return { drawHUD, drawBanner, drawMenu, drawPause, drawUpgrade, drawGameOver, drawLeaderboard };
 })();
 
 /* ======================= FILE: game.js ======================= */
@@ -2138,7 +3235,12 @@ const __mod_game = (() => {
   // game.js  -  the core game loop.
   //
   // States:  menu -> playing <-> paused -> dying -> gameover -> (playing | menu)
+  //          playing -> upgrade (pick 1 of 3 cards after a boss) -> playing
   //          and 'leaderboard' (opened from the menu or the game-over screen)
+  // Modes:   CLASSIC  relaxed endless run, saved to the classic boards
+  //          RANKED   weekly season, same enemy sequence for everyone, tiers, and
+  //                   a board with ONE row per player name (see ranked.js)
+  // Stage flow: stage timer runs out -> BOSS -> boss dies -> upgrade card -> next stage
   //
   // update(dt) advances the simulation; render() draws it. They are separate so
   // the headless smoke test can run thousands of frames without a browser.
@@ -2151,10 +3253,15 @@ const __mod_game = (() => {
   const { STAGES } = __mod_stages;
   const { MathRules, isPrime } = __mod_mathRules;
   const { Spawner } = __mod_spawner;
-  const { Player, Bullet, Particle, FloatingText, COLORS, POWERUP_INFO } = __mod_entities;
+  const { Player, Bullet, Token, PowerUp, Particle, FloatingText, Ring, COLORS, POWERUP_INFO } = __mod_entities;
+  const { Boss, BOSSES } = __mod_boss;
+  const { Combo } = __mod_combo;
+  const { pickCards, applyUpgrade } = __mod_upgrades;
+  const { RankedBoard, seasonSeed } = __mod_ranked;
+  const { mulberry32 } = __mod_rng;
   const { drawText } = __mod_draw;
   const { Leaderboard, cleanName } = __mod_leaderboard;
-  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard } = __mod_ui;
+  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade } = __mod_ui;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -2172,8 +3279,9 @@ const __mod_game = (() => {
      * @param {HTMLCanvasElement} canvas
      * @param {Input} input
      * @param {Sfx} sfx
-     * @param {{dpr?: number, rng?: () => number, leaderboard?: Leaderboard,
-     *          askName?: (lastName: string, score: number) => Promise<string|null>}} options
+     * @param {{dpr?: number, rng?: () => number, leaderboard?: Leaderboard, rankedBoard?: RankedBoard,
+     *          askName?: (lastName: string, score: number) => Promise<string|null>,
+     *          music?: Music}} options
      */
     constructor(canvas, input, sfx, options = {}) {
       this.canvas = canvas;
@@ -2183,11 +3291,16 @@ const __mod_game = (() => {
       this.dpr = options.dpr || 1;
       this.rng = options.rng || Math.random;
       this.leaderboard = options.leaderboard || new Leaderboard();
+      this.rankedBoard = options.rankedBoard || new RankedBoard({ onlineUrl: CONFIG.leaderboard.onlineUrl });
       this.askName = options.askName || null; // main.js shows the "enter your name" box
-      this.lbView = { tab: 'device', from: 'menu', highlight: null, online: { status: 'idle', rows: [] } };
+      this.music = options.music || null;
+      this.mode = 'classic';
+      this.lbView = { tab: 'device', from: 'menu', highlight: null, online: { status: 'idle', rows: [] }, ranked: { status: 'idle', rows: [] } };
       this.lbButtons = []; // tap targets, filled in while drawing each screen
       this.menuButtons = [];
       this.goButtons = [];
+      this.upgradeRects = [];
+      this.upgradeCards = [];
 
       this.state = 'menu';
       this.stateTime = 0;
@@ -2209,12 +3322,39 @@ const __mod_game = (() => {
     get stage() { return STAGES[this.stageIndex % STAGES.length]; }
     get character() { return this.rules.character; }
 
-    /** Begin a fresh run with the given character id. */
-    startRun(characterId) {
+    /** The MAKE-N target on screen right now (or null). */
+    get gateTarget() {
+      const g = this.gates.find((x) => !x.resolved && !x.dead && x.y > -20);
+      return g ? g.target : null;
+    }
+
+    /** Begin a fresh run with the given character id (and mode: 'classic' | 'ranked'). */
+    startRun(characterId, mode = this.mode) {
       const character = CHARACTERS.find((c) => c.id === characterId) || CHARACTERS[0];
+      this.mode = mode === 'ranked' ? 'ranked' : 'classic';
+      this.season = this.rankedBoard.season;
+      // Ranked: everything random that affects the game comes from a season seed, so
+      // every player faces the same enemy sequence. Looks (particles) use this.rng.
+      this.runRng = this.mode === 'ranked' ? mulberry32(seasonSeed(this.season)) : this.rng;
       this.rules = new MathRules(character);
       this.player = new Player(character);
-      this.spawner = new Spawner(this.rng);
+      this.mods = this.rules.mods;     // upgrade multipliers, shared by rules and player
+      this.player.mods = this.mods;
+      this.owned = {};                 // upgrade id -> times taken
+      this.spawner = new Spawner(this.runRng);
+      this.combo = new Combo();
+      this.boss = null;
+      this.phase = 'stage';            // 'stage' | 'boss' | 'clear' (boss dead, waiting for the cards)
+      this.upgradeDelay = 0;
+      this.bossesDefeated = 0;
+      this.gates = [];
+      this.rings = [];
+      this.grazeCd = 0;
+      this.grazes = 0;
+      this.slowmo = { t: 0, scale: 1 };
+      this.multPulse = 0;
+      this.rankedResult = null;
+      this.rankedSend = null;
 
       this.tokens = [];
       this.bullets = [];
@@ -2253,8 +3393,75 @@ const __mod_game = (() => {
       this.stateTime = 0;
     }
 
+    /** The stage timer ran out: the stage boss arrives. Spawning pauses until it is beaten. */
+    startBoss() {
+      const def = BOSSES[this.stageIndex % BOSSES.length];
+      this.boss = new Boss(def, { difficulty: this.difficulty, stagesCleared: this.stageIndex, rng: this.runRng });
+      this.phase = 'boss';
+      this.gates.forEach((g) => { g.dead = true; });
+      this.bullets = this.bullets.filter((b) => b.owner === 'player');
+      this.banner = { t: 0, dur: 2.6, boss: def };
+      this.shake = Math.max(this.shake, 0.4);
+      this.sfx.play('boss');
+    }
+
+    /** The boss number reached 0. */
+    bossDefeated() {
+      const b = this.boss;
+      if (!b) return;
+      this.boss = null;
+      this.phase = 'clear';
+      this.bossesDefeated++;
+      this.rules.addScore(b.def.reward);
+      this.explode(b.x, b.y, `hsl(${b.def.hue},95%,62%)`, 5);
+      this.explode(b.x, b.y, '#ffffff', 3);
+      this.addText(b.x, b.y - 10, `${b.def.name} DOWN  +${b.def.reward}`, COLORS.gold, 22);
+      // everything hostile pops (no kill rewards), enemy bullets vanish
+      for (const t of this.tokens) if (t.role === 'bad' && !t.dead) { t.dead = true; this.explode(t.x, t.y, COLORS.bad, 0.7); }
+      for (const q of this.bullets) if (q.owner === 'enemy') q.dead = true;
+      if (this.lives < CONFIG.maxLives) this.powerups.push(new PowerUp('life', b.x));
+      this.shake = 1;
+      this.flash = { color: 'rgba(255,255,255,0.55)', t: 0.4 };
+      this.triggerSlowmo(0.7, 0.3);
+      this.sfx.play('explode');
+      this.upgradeDelay = 1.6;
+    }
+
+    /** The boss ran out of patience (CONFIG.bossTimeout): no reward, no cards. */
+    bossEscapes() {
+      this.addText(this.boss.x, this.boss.y, 'THE BOSS ESCAPED', COLORS.hazard, 20);
+      this.boss = null;
+      this.phase = 'stage';
+      this.advanceStage();
+    }
+
+    /** Show the "pick 1 of 3" cards. */
+    openUpgrade() {
+      this.upgradeCards = pickCards(this.runRng, this.owned, 3);
+      this.upgradeRects = [];
+      this._setState('upgrade');
+      this.input.touchEnd(this.input.touch.id);
+      this.sfx.play('stage');
+    }
+
+    /** The player picked card number i (0..2). */
+    chooseUpgrade(i) {
+      const card = this.upgradeCards[i];
+      if (!card || this.state !== 'upgrade') return;
+      applyUpgrade(this, card.id);
+      this.addText(this.player.x, this.player.y - 40, card.name, COLORS.cyan, 20);
+      this.sfx.play('card');
+      this.upgradeCards = [];
+      this._setState('playing');
+      this.advanceStage();
+    }
+
     advanceStage() {
       const cleared = this.stageIndex % STAGES.length;
+      this.phase = 'stage';
+      this.boss = null;
+      this.gates = [];
+      this.combo.reset();
       const bonus = CONFIG.stageClearBonus * (cleared + 1);
       this.rules.addScore(bonus);
       this.bombs = Math.min(CONFIG.maxBombs, this.bombs + 1);
@@ -2266,14 +3473,23 @@ const __mod_game = (() => {
       this.stageTime = 0;
       this.difficulty = 1 + 0.3 * Math.floor(this.stageIndex / STAGES.length); // endless loops get harder
       this.rules.setStage(this.stage, this.stageIndex);
+      this.spawner.onStageStart();
       this.banner = { t: 0, dur: 2.8 };
       this.sfx.play('stage');
+    }
+
+    /** Slow motion for `secs` real seconds at `scale` speed (0.3 = very slow). */
+    triggerSlowmo(secs, scale) {
+      if (this.slowmo.t > 0 && this.slowmo.scale < scale) return; // keep the stronger one
+      this.slowmo = { t: secs, scale };
     }
 
     beginDeath(reason = 'score') {
       this.deathReason = reason;
       this._setState('dying');
-      this.deathTimer = 1.1;
+      this.deathTimer = 0.9;
+      this.triggerSlowmo(CONFIG.slowmo.deathSecs + 0.5, CONFIG.slowmo.deathScale);
+      this.explode(this.player.x, this.player.y, this.character.color, 3);
       this.burst(this.player.x, this.player.y, this.character.color, 60, 320);
       this.burst(this.player.x, this.player.y, '#ffffff', 25, 200);
       this.shake = 0.6;
@@ -2295,6 +3511,12 @@ const __mod_game = (() => {
 
     update(dt) {
       dt = Math.min(dt, 1 / 30); // never let a long frame tunnel through everything
+      // Slow motion: the world runs at `scale` speed for a moment (last life, boss kill, death).
+      if (this.slowmo.t > 0) {
+        this.slowmo.t -= dt;
+        dt *= this.slowmo.scale;
+        if (this.slowmo.t <= 0) this.slowmo = { t: 0, scale: 1 };
+      }
       this.time += dt;
       this.stateTime += dt;
       if (this.input.wasPressed('mute')) this.sfx.toggleMute();
@@ -2304,6 +3526,12 @@ const __mod_game = (() => {
         case 'playing': this.updatePlaying(dt); break;
         case 'paused':
           if (this.input.wasPressed('pause')) this._setState('playing');
+          break;
+        case 'upgrade':
+          this.updateEffects(dt);
+          if (this.stateTime > 0.5) {
+            ['pick1', 'pick2', 'pick3'].forEach((k, i) => { if (this.input.wasPressed(k)) this.chooseUpgrade(i); });
+          }
           break;
         case 'dying': this.updateDying(dt); break;
         case 'gameover':
@@ -2316,7 +3544,19 @@ const __mod_game = (() => {
           if (this.input.wasPressed('back') || this.input.wasPressed('confirm')) this.closeLeaderboard();
           break;
       }
+      this._syncMusic();
       this.input.endFrame();
+    }
+
+    /** Tell the music which tune should be playing right now. */
+    _syncMusic() {
+      if (!this.music) return;
+      let theme = null;
+      if (this.state === 'menu' || this.state === 'leaderboard') theme = 'menu';
+      else if (this.state === 'playing' || this.state === 'paused' || this.state === 'upgrade') {
+        theme = this.phase === 'boss' ? 'boss' : `s${this.stageIndex % STAGES.length}`;
+      }
+      this.music.setTheme(theme);
     }
 
     updateMenu() {
@@ -2325,7 +3565,13 @@ const __mod_game = (() => {
       if (inp.wasPressed('right') || inp.wasPressed('down')) this.menuIndex = 1;
       if (inp.wasPressed('pick1')) this.menuIndex = 0;
       if (inp.wasPressed('pick2')) this.menuIndex = 1;
-      if (inp.wasPressed('confirm')) this.startRun(CHARACTERS[this.menuIndex].id);
+      if (inp.wasPressed('confirm')) this.beginFromMenu(this.menuIndex);
+    }
+
+    /** Start a run from the menu in the selected mode. */
+    beginFromMenu(i) {
+      this.menuIndex = i;
+      this.startRun(CHARACTERS[i].id, this.mode);
     }
 
     /**
@@ -2340,10 +3586,14 @@ const __mod_game = (() => {
 
       switch (this.state) {
         case 'menu': {
-          if (buttonAt(this.menuButtons)) { this.openLeaderboard('menu'); return true; }
+          const btn = buttonAt(this.menuButtons);
+          if (btn?.id === 'board') { this.openLeaderboard('menu'); return true; }
+          if (btn?.id === 'mode-classic') { this.mode = 'classic'; return true; }
+          if (btn?.id === 'mode-ranked') { this.mode = 'ranked'; return true; }
+          if (btn?.id === 'mute') { this.sfx.toggleMute(); return true; }
           let used = false;
           this.cardRects.forEach((r, i) => {
-            if (inRect(r)) { this.menuIndex = i; this.startRun(CHARACTERS[i].id); used = true; }
+            if (inRect(r)) { this.beginFromMenu(i); used = true; }
           });
           return used;
         }
@@ -2351,7 +3601,13 @@ const __mod_game = (() => {
           // Buttons act through the same "just pressed" path as the keyboard.
           if (inRect(CONFIG.touch.bomb)) { this.input.justPressed.add('KeyB'); return true; }
           if (inRect(CONFIG.touch.pause)) { this.input.justPressed.add('KeyP'); return true; }
+          if (inRect(CONFIG.touch.mute)) { this.sfx.toggleMute(); return true; }
           return false;
+        case 'upgrade': {
+          if (this.stateTime <= 0.5) return true; // ignore the tap that was still shooting
+          this.upgradeRects.forEach((r, i) => { if (inRect(r)) this.chooseUpgrade(i); });
+          return true;
+        }
         case 'paused':
           this._setState('playing');
           return true;
@@ -2367,6 +3623,7 @@ const __mod_game = (() => {
           const btn = buttonAt(this.lbButtons);
           if (btn?.id === 'tab-device') this.lbView.tab = 'device';
           else if (btn?.id === 'tab-world') this.lbView.tab = 'world';
+          else if (btn?.id === 'tab-ranked') this.lbView.tab = 'ranked';
           else if (btn?.id === 'again') this.startRun(this.character.id);
           else if (btn?.id === 'menu') this._setState('menu');
           else if (btn?.id === 'back') this.closeLeaderboard();
@@ -2383,7 +3640,8 @@ const __mod_game = (() => {
     _enterGameOver() {
       this._setState('gameover');
       const score = Math.round(this.peakScore);
-      const wantsName = score > 0 && (this.leaderboard.qualifies(score) || this.leaderboard.online);
+      const ranked = this.mode === 'ranked';
+      const wantsName = score > 0 && (ranked || this.leaderboard.qualifies(score) || this.leaderboard.online);
       if (!this.askName || !wantsName) return;
 
       const entry = { score, pilot: this.character.id, stage: this.stageIndex + 1 };
@@ -2391,7 +3649,7 @@ const __mod_game = (() => {
       Promise.resolve()
         .then(() => this.askName(this.leaderboard.lastName, score))
         .catch(() => null)
-        .then((name) => this._finishNameEntry(entry, name));
+        .then((name) => (ranked ? this._finishRanked(entry, name) : this._finishNameEntry(entry, name)));
     }
 
     _finishNameEntry(entry, name) {
@@ -2405,9 +3663,24 @@ const __mod_game = (() => {
       this.openLeaderboard('gameover', saved, sent);
     }
 
+    /** Ranked run finished and the player typed a name: keep the best score for that name. */
+    _finishRanked(entry, name) {
+      this.nameEntry = false;
+      if (name == null || this.state !== 'gameover') return;
+      const clean = cleanName(name);
+      this.leaderboard.lastName = clean;
+      const res = this.rankedBoard.submitLocal({ ...entry, name: clean });
+      this.rankedResult = { ...res, score: entry.score, name: clean, season: this.season };
+      if (this.rankedBoard.online && res.improved) {
+        this.rankedSend = this.rankedBoard.submitOnline(res.row).catch(() => false);
+      }
+      this.openLeaderboard('gameover', res.row);
+    }
+
     /** Show the leaderboard. `from` = 'menu' | 'gameover'. `after` = a promise to wait for before loading WORLD scores. */
     openLeaderboard(from, highlight = null, after = null) {
-      const view = { tab: 'device', from, highlight, online: { status: 'idle', rows: [] } };
+      const tab = this.mode === 'ranked' ? 'ranked' : 'device';
+      const view = { tab, from, highlight, online: { status: 'idle', rows: [] }, ranked: { status: 'idle', rows: [] } };
       this.lbView = view;
       this._setState('leaderboard');
       if (this.leaderboard.online) {
@@ -2416,6 +3689,13 @@ const __mod_game = (() => {
           .then(() => this.leaderboard.fetchOnline())
           .then((rows) => { view.online = rows ? { status: 'ok', rows } : { status: 'error', rows: [] }; })
           .catch(() => { view.online = { status: 'error', rows: [] }; });
+      }
+      if (this.rankedBoard.online) {
+        view.ranked.status = 'loading';
+        Promise.resolve(this.rankedSend)
+          .then(() => this.rankedBoard.fetchOnline())
+          .then((rows) => { view.ranked = rows ? { status: 'ok', rows } : { status: 'error', rows: [] }; })
+          .catch(() => { view.ranked = { status: 'error', rows: [] }; });
       }
     }
 
@@ -2431,7 +3711,10 @@ const __mod_game = (() => {
       this.runTime += dt;
       this.banner.t += dt;
       this.rules.tick(dt);
+      this.combo.tick(dt);
       this.invuln = Math.max(0, this.invuln - dt);
+      this.grazeCd = Math.max(0, this.grazeCd - dt);
+      this.multPulse = Math.max(0, this.multPulse - dt);
 
       // --- player input -------------------------------------------------------
       this.player.update(dt, this.input);
@@ -2444,15 +3727,22 @@ const __mod_game = (() => {
       }
       if (this.input.wasPressed('bomb')) this.detonateBomb();
 
-      // --- stage progression & spawning --------------------------------------
-      if (this.stageTime >= CONFIG.stageDuration) this.advanceStage();
+      // --- stage progression: timer -> boss -> cards -> next stage ------------
+      if (this.phase === 'stage' && this.stageTime >= CONFIG.stageDuration) this.startBoss();
+      if (this.phase === 'clear') {
+        this.upgradeDelay -= dt;
+        if (this.upgradeDelay <= 0) { this.openUpgrade(); return; }
+      }
+      if (this.boss) this.updateBoss(dt);
+
       this.spawner.update(
         dt, this.stage,
         {
-          intensity: this.stageTime / CONFIG.stageDuration, difficulty: this.difficulty,
-          playerX: this.player.x, lives: this.lives,
+          intensity: Math.min(1, this.stageTime / CONFIG.stageDuration), difficulty: this.difficulty,
+          playerX: this.player.x, lives: this.lives, hold: this.phase !== 'stage',
+          stagesCleared: this.stageIndex,
         },
-        this.tokens, this.powerups, this.obstacles,
+        this.tokens, this.powerups, this.obstacles, this.gates,
       );
 
       this.updateEntities(dt);
@@ -2470,9 +3760,27 @@ const __mod_game = (() => {
       }
     }
 
+    /** Move the boss and turn its attacks into real bullets and tokens. */
+    updateBoss(dt) {
+      const boss = this.boss;
+      for (const act of boss.update(dt, this.player)) {
+        if (act.type === 'bullets') {
+          for (const s of act.list) {
+            this.bullets.push(new Bullet({ x: s.x, y: s.y, vx: s.vx, vy: s.vy, owner: 'enemy', kind: 'subBullet', value: s.value, radius: 11 }));
+          }
+        } else if (act.type === 'summon') {
+          for (let i = 0; i < act.n; i++) {
+            this.tokens.push(new Token({ kind: 'zero', x: boss.x + (i - (act.n - 1) / 2) * 56, y: boss.y + 30, vy: 115, hp: 2 }));
+          }
+        }
+      }
+      if (boss.fightTime > CONFIG.bossTimeout) this.bossEscapes();
+    }
+
     updateDying(dt) {
       this.deathTimer -= dt;
       this.updateEffects(dt);
+      this.gates.forEach((g) => g.update(dt));
       this.tokens.forEach((t) => t.update(dt));
       this.obstacles.forEach((o) => o.update(dt));
       this.bullets.forEach((b) => b.update(dt));
@@ -2501,17 +3809,29 @@ const __mod_game = (() => {
             t.x += (dx / d) * pull;
             t.y += (dy / d) * pull;
           }
+        } else if (this.mods.magnet > 0 && t.role === 'good' && t.pattern !== 'orbit') {
+          // LUCKY MAGNET upgrade: a gentle pull with a short reach
+          const dx = p.x - t.x;
+          const dy = p.y - t.y;
+          const d = Math.hypot(dx, dy);
+          if (d < this.mods.magnet && d > 1) {
+            const pull = CONFIG.piMagnet.pull * 0.5 * (1 - d / this.mods.magnet) * dt;
+            t.x += (dx / d) * pull;
+            t.y += (dy / d) * pull;
+          }
         }
       }
       this.bullets.forEach((b) => b.update(dt));
       this.powerups.forEach((u) => u.update(dt));
       this.obstacles.forEach((o) => o.update(dt));
+      this.gates.forEach((g) => g.update(dt));
       this.updateEffects(dt);
     }
 
     updateEffects(dt) {
       this.particles.forEach((q) => q.update(dt));
       this.texts.forEach((q) => q.update(dt));
+      this.rings.forEach((q) => q.update(dt));
       this.shake = Math.max(0, this.shake - dt * 2.2);
       if (this.flash) {
         this.flash.t -= dt;
@@ -2557,6 +3877,22 @@ const __mod_game = (() => {
         }
       }
 
+      // 0b) Player shots vs the boss.
+      if (this.boss) {
+        const bs = this.boss;
+        for (const b of this.bullets) {
+          if (b.dead || b.owner !== 'player') continue;
+          if (hits(b.x, b.y, b.radius, bs.x, bs.y, bs.radius)) {
+            b.dead = true;
+            if (!bs.hurtable) { this.burst(b.x, b.y, '#ffffff', 2, 60); continue; } // still arriving: shielded
+            const killed = bs.hit(b.damage);
+            this.burst(b.x, b.y, '#ffffff', 3, 110);
+            if (killed) { this.bossDefeated(); break; }
+            this.sfx.play('kill');
+          }
+        }
+      }
+
       // 1) Player shots vs hostile tokens (shots pass straight through pickups).
       for (const b of this.bullets) {
         if (b.dead || b.owner !== 'player') continue;
@@ -2579,7 +3915,9 @@ const __mod_game = (() => {
         const r = t.role === 'good' ? p.collectRadius : p.hitRadius;
         if (hits(p.x, p.y, r, t.x, t.y, t.radius)) {
           t.dead = true;
+          const before = this.rules.effectiveMultiplier;
           this.applyResult(this.rules.resolveTouch(t), t.x, t.y, t);
+          this.checkMultFlash(before);
         }
       }
 
@@ -2609,7 +3947,7 @@ const __mod_game = (() => {
         }
       }
 
-      // 5) Obstacles vs the player: costs one life, then 2 seconds of protection.
+      // 5) Obstacles and the boss's body vs the player: costs one life, then 2 seconds of protection.
       if (this.invuln <= 0) {
         for (const o of this.obstacles) {
           if (!o.dead && o.touchesCircle(p.x, p.y, p.hitRadius)) {
@@ -2617,20 +3955,117 @@ const __mod_game = (() => {
             break;
           }
         }
+        if (this.invuln <= 0 && this.boss && hits(p.x, p.y, p.hitRadius, this.boss.x, this.boss.y, this.boss.radius * 0.8)) {
+          this.loseLife(this.boss, 'BOSS HIT');
+        }
+      }
+
+      // 6) MAKE-N gates: fly through the box that equals the target.
+      for (const g of this.gates) {
+        if (g.resolved || g.dead) continue;
+        if (g.touchesCircle(p.x, p.y, p.hitRadius + 2)) { this.resolveGate(g); break; }
+      }
+
+      // 7) Near misses: passing close to danger without touching it pays a small bonus.
+      if (this.invuln <= 0) this.checkGraze();
+    }
+
+    /** CLOSE CALL: an enemy bullet, hostile number or rock passed within a hair of the ship. */
+    checkGraze() {
+      if (this.grazeCd > 0) return;
+      const p = this.player;
+      const margin = CONFIG.graze.margin;
+      const near = (o, r) => {
+        if (o.grazed || o.dead) return false;
+        const d = Math.hypot(o.x - p.x, o.y - p.y);
+        return d > p.hitRadius + r && d <= p.hitRadius + r + margin;
+      };
+      const target =
+        this.bullets.find((b) => b.owner === 'enemy' && near(b, b.radius)) ||
+        this.tokens.find((t) => t.role === 'bad' && near(t, t.radius * 1.1)) ||
+        this.obstacles.find((o) => o.kind === 'meteor' && near(o, o.radius * 0.85));
+      if (!target) return;
+      target.grazed = true;
+      this.grazeCd = CONFIG.graze.cooldown;
+      this.grazes++;
+      const reward = Math.max(1, Math.round(CONFIG.graze.reward * this.mods.graze));
+      this.rules.addScore(reward);
+      this.addText(p.x, p.y - 30, `CLOSE CALL +${reward}`, COLORS.cyan, 13);
+      this.sfx.play('graze');
+      this.chain();
+    }
+
+    /** One more hit in the combo chain; pays the milestone bonus when there is one. */
+    chain() {
+      const bonus = this.combo.add();
+      if (bonus > 0) {
+        this.rules.addScore(bonus);
+        this.addText(this.player.x, this.player.y - 56, `COMBO ×${this.combo.count}  +${bonus}`, COLORS.gold, 18);
+        this.sfx.play('combo');
+      }
+    }
+
+    /** The player flew into a gate. Right answer: bonus. Wrong answer: lose a life. */
+    resolveGate(g) {
+      const set = this.gates.filter((x) => x.setId === g.setId);
+      set.forEach((o) => { if (o !== g) o.resolved = 'gone'; });
+      if (g.correct) {
+        g.resolved = 'right';
+        const reward = Math.round(CONFIG.gates.reward * (1 + 0.25 * this.stageIndex));
+        this.rules.addScore(reward);
+        const before = this.rules.effectiveMultiplier;
+        this.rules.multiplier = Math.min(CONFIG.maxMultiplier, Math.max(2, this.rules.multiplier * 2));
+        this.rules.multTimer = 0;
+        const kinds = ['abs', 'pi', 'sq'];
+        const kind = kinds[Math.floor(this.runRng() * kinds.length)];
+        this.rules.activatePowerup(kind);
+        this.addText(g.x, g.y - 30, `${g.text} = ${g.value}  CORRECT!  +${reward}`, COLORS.good, 18);
+        this.addText(g.x, g.y - 8, POWERUP_INFO[kind].name, POWERUP_INFO[kind].color, 15);
+        this.explode(g.x, g.y, COLORS.good, 1.5);
+        this.flash = { color: 'rgba(93,255,176,0.3)', t: 0.25 };
+        this.sfx.play('gate');
+        this.chain();
+        this.checkMultFlash(before);
+      } else {
+        g.resolved = 'wrong';
+        this.addText(g.x, g.y - 30, `${g.text} = ${g.value}  WRONG`, COLORS.bad, 18);
+        this.sfx.play('wrong');
+        if (this.invuln <= 0) this.loseLife(g, 'WRONG ANSWER');
+      }
+    }
+
+    /** Big gold flash when the multiplier first reaches 8, 16, 32 or 64. */
+    checkMultFlash(before) {
+      const now = this.rules.effectiveMultiplier;
+      for (const m of CONFIG.multFlash) {
+        if (before < m && now >= m) {
+          this.flash = { color: 'rgba(255,215,94,0.5)', t: 0.4 };
+          this.addText(W / 2, H / 2 - 20, `×${m}!`, COLORS.gold, 60);
+          this.explode(this.player.x, this.player.y, COLORS.gold, 2.5);
+          this.multPulse = 1.2;
+          this.sfx.play('mult');
+        }
       }
     }
 
     /** An obstacle hit the ship. Death itself is decided later in updatePlaying. */
-    loseLife(obstacle) {
+    loseLife(source, why = '') {
       const p = this.player;
       this.lives = Math.max(0, this.lives - 1);
       this.invuln = CONFIG.invulnSecs;
-      if (obstacle.kind === 'meteor') obstacle.dead = true; // the rock shatters
+      if (source?.kind === 'meteor') source.dead = true; // the rock shatters
+      this.combo.reset();
       this.shake = 0.7;
       this.flash = { color: 'rgba(255,159,67,0.4)', t: 0.25 };
-      this.burst(p.x, p.y, COLORS.hazard, 30, 260);
-      this.addText(p.x, p.y - 34, this.lives > 0 ? '-1 LIFE' : 'NO LIVES LEFT', COLORS.hazard, 22);
+      this.explode(p.x, p.y, COLORS.hazard, 1.6);
+      const msg = this.lives > 0 ? (why ? `${why}  -1 LIFE` : '-1 LIFE') : 'NO LIVES LEFT';
+      this.addText(p.x, p.y - 34, msg, COLORS.hazard, 22);
       this.sfx.play('hit');
+      if (this.lives === 1) {
+        // LAST LIFE: the world slows down for a moment so you can breathe
+        this.triggerSlowmo(CONFIG.slowmo.lastLifeSecs, CONFIG.slowmo.lastLifeScale);
+        this.addText(W / 2, H / 2 + 20, 'LAST LIFE!', COLORS.bad, 34);
+      }
     }
 
     /** A heart was collected. Lives can never go above CONFIG.maxLives. */
@@ -2664,22 +4099,49 @@ const __mod_game = (() => {
       if (res.tone === 'bad') {
         this.shake = Math.max(this.shake, 0.35);
         this.flash = { color: 'rgba(255,40,80,0.35)', t: 0.18 };
-        this.burst(x, y, COLORS.bad, 14, 180);
+        this.explode(x, y, COLORS.bad, 1.1);
         this.sfx.play('hit');
+        this.combo.reset();
       } else if (res.tone === 'good') {
         this.burst(x, y, COLORS.good, 10, 120);
         this.sfx.play('pickup');
+        this.chain();
       }
       if (res.shrink !== undefined) this.player.shrink(res.shrink);
     }
 
-    /** Destroy a hostile token and pay the kill reward. */
-    killToken(token) {
+    /** Destroy a hostile token and pay the kill reward. Splitters break in two unless `split` is false. */
+    killToken(token, split = true) {
       token.dead = true;
       const res = this.rules.resolveKill(token);
       this.addText(token.x, token.y - 6, res.label, COLORS.gold, 16);
-      this.burst(token.x, token.y, COLORS.bad, 12, 170);
+      this.explode(token.x, token.y, COLORS.bad, split ? 1 : 0.8);
       this.sfx.play('kill');
+      this.chain();
+      if (split && token.splits) {
+        // a -8 splits into -4 and -4 (the pieces always add back up to the original)
+        const total = Math.abs(token.value);
+        const a = Math.floor(total / 2);
+        const parts = [a, total - a];
+        parts.forEach((n, i) => {
+          this.tokens.push(new Token({
+            kind: 'int', value: -n, x: token.x + (i ? 16 : -16), y: token.y, vy: 100, hp: 1,
+            pattern: 'drift', vx: i ? 80 : -80,
+          }));
+        });
+        this.addText(token.x, token.y + 16, `SPLIT ${parts[0]}+${parts[1]}`, '#ffb3c1', 12);
+      }
+    }
+
+    /** A bigger explosion: sparks plus expanding shockwave rings. `size` 1 = a normal kill. */
+    explode(x, y, color, size = 1) {
+      this.burst(x, y, color, Math.round(14 * size), 150 + 70 * size);
+      this.rings.push(new Ring(x, y, color, 34 + 26 * size, 230 + 40 * size, 3 + size));
+      if (size >= 2) {
+        this.rings.push(new Ring(x, y, '#ffffff', 60 + 40 * size, 360 + 60 * size, 5));
+        this.shake = Math.max(this.shake, Math.min(0.9, 0.2 * size));
+      }
+      if (this.rings.length > 40) this.rings.splice(0, this.rings.length - 40);
     }
 
     // ===========================================================================
@@ -2705,8 +4167,13 @@ const __mod_game = (() => {
           t.spared = 1.5;
           sparedAny = true;
         } else {
-          this.killToken(t);
+          this.killToken(t, false);
         }
+      }
+      if (this.boss && this.boss.hurtable) {
+        // the bomb also hurts a boss (and rattles a shielded one)
+        this.addText(this.boss.x, this.boss.y + 50, `-${CONFIG.bombBossDamage}`, COLORS.violet, 22);
+        if (this.boss.hit(CONFIG.bombBossDamage)) this.bossDefeated();
       }
       if (sparedAny) this.addText(this.player.x, this.player.y - 50, 'PRIMES SURVIVE', COLORS.gold, 15);
 
@@ -2727,9 +4194,11 @@ const __mod_game = (() => {
       this.bullets = this.bullets.filter((b) => !b.dead);
       this.powerups = this.powerups.filter((u) => !u.dead);
       this.obstacles = this.obstacles.filter((o) => !o.dead);
+      this.gates = this.gates.filter((g) => !g.dead);
       this.particles = this.particles.filter((q) => !q.dead);
+      this.rings = this.rings.filter((q) => !q.dead);
       this.texts = this.texts.filter((q) => !q.dead);
-      if (this.particles.length > 400) this.particles.splice(0, this.particles.length - 400);
+      if (this.particles.length > 500) this.particles.splice(0, this.particles.length - 500);
     }
 
     addText(x, y, text, color, size) {
@@ -2791,9 +4260,11 @@ const __mod_game = (() => {
           ctx.fillRect(0, 0, W, H);
         }
         this.drawLowScoreVignette(ctx);
+        if (this.slowmo.t > 0 && this.slowmo.scale < 0.6) this.drawSlowmoTint(ctx);
         drawHUD(ctx, this);
         if (this.state === 'playing') drawBanner(ctx, this);
         if (this.state === 'paused') drawPause(ctx, this);
+        if (this.state === 'upgrade') drawUpgrade(ctx, this);
         if (this.state === 'gameover') drawGameOver(ctx, this);
       }
     }
@@ -2827,11 +4298,13 @@ const __mod_game = (() => {
 
     drawWorld(ctx) {
       this.obstacles.forEach((o) => o.draw(ctx));
+      this.gates.forEach((g) => g.draw(ctx));
       this.powerups.forEach((u) => u.draw(ctx));
       this.tokens.forEach((t) => t.draw(ctx));
+      if (this.boss) this.boss.draw(ctx);
       this.bullets.forEach((b) => b.draw(ctx));
 
-      if (this.state === 'playing' || this.state === 'paused') {
+      if (this.state === 'playing' || this.state === 'paused' || this.state === 'upgrade') {
         this.drawPlayerAuras(ctx);
         // blink while protected after losing a life
         if (this.invuln > 0 && Math.floor(this.time * 14) % 2 === 0) ctx.globalAlpha = 0.3;
@@ -2839,6 +4312,7 @@ const __mod_game = (() => {
         ctx.globalAlpha = 1;
       }
 
+      this.rings.forEach((q) => q.draw(ctx));
       this.particles.forEach((q) => q.draw(ctx));
       this.texts.forEach((q) => q.draw(ctx));
 
@@ -2885,6 +4359,15 @@ const __mod_game = (() => {
       }
     }
 
+    /** Slow-motion look: a cool blue edge glow. */
+    drawSlowmoTint(ctx) {
+      const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.75);
+      g.addColorStop(0, 'rgba(80,140,255,0)');
+      g.addColorStop(1, 'rgba(80,140,255,0.28)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, W, H);
+    }
+
     drawLowScoreVignette(ctx) {
       if (this.state !== 'playing' || this.rules.score >= CONFIG.lowScoreWarning) return;
       const a = 0.18 + 0.12 * Math.sin(this.time * 9);
@@ -2912,7 +4395,7 @@ const __mod_main = (() => {
 
   const { CONFIG } = __mod_config;
   const { Input } = __mod_input;
-  const { Sfx } = __mod_audio;
+  const { Sfx, Music } = __mod_audio;
   const { Game } = __mod_game;
   const { detectInAppBrowser, detectPlatform, chromeIntentUrl, inAppHelp } = __mod_inapp;
 
@@ -3022,12 +4505,14 @@ const __mod_main = (() => {
 
     const input = new Input(window);
     const sfx = new Sfx();
-    const game = new Game(canvas, input, sfx, { dpr, askName });
+    const music = new Music(sfx);
+    const game = new Game(canvas, input, sfx, { dpr, askName, music });
 
     // Browsers only allow audio and fullscreen after a tap, so do it on the first one.
     let firstTap = true;
     window.addEventListener('pointerdown', () => {
       sfx.unlock();
+      music.start(); // background music (needs the first tap)
       if (!firstTap) return;
       firstTap = false;
       try {
