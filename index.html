@@ -245,6 +245,7 @@ const __mod_config = (() => {
     deadlyHp: 4,              // ...and a negative number in those stages
     bossHpScale: 2.2,         // multiplies every boss's health
     bossTimeout: 70,          // seconds before a boss gives up and leaves (no reward)
+    bossBulletCap: 12,        // most red boss bullets on screen at once (+3 for each later boss): they cannot pile up
     bombBossDamage: 8,        // a Prime Bomb hurts a boss this much
     combo: { window: 2.2, milestone: 5, bonus: 4, maxBonus: 30 }, // chain kills/pickups within `window` secs
     graze: { margin: 15, reward: 2, cooldown: 0.18 },             // near-miss "CLOSE CALL" bonus
@@ -2825,33 +2826,34 @@ const __mod_boss = (() => {
     {
       // Gimmick: at 60% health it splits into two CLONES. The boss is shielded until both are shot down.
       name: 'THE SUM', glyph: 'Σ', hue: 200, hp: 45, value: 3, reward: 80, sides: 6,
-      attacks: [{ type: 'fan', every: 1.7, n: 4, spread: 0.28 }, { type: 'rain', every: 4.2, n: 4 }],
-      phase2: [{ type: 'ring', every: 3.4, n: 10 }],
+      attacks: [{ type: 'fan', every: 2.2, n: 3, spread: 0.3 }, { type: 'rain', every: 5.0, n: 3 }],
+      phase2: [{ type: 'ring', every: 5.0, n: 8 }],
       clones: { at: 0.6, n: 2, hp: 7 },
       intro: 'It splits in two! Shoot the CLONES first.',
     },
     {
       // Gimmick: a turning SHIELD (shots hitting it are blocked), a warned LASER band, and a SLAM at the end.
       name: 'THE DIFFERENCE', glyph: '−', hue: 285, hp: 65, value: 4, reward: 120, sides: 4,
-      attacks: [{ type: 'fan', every: 1.6, n: 5, spread: 0.24 }, { type: 'rain', every: 3.8, n: 5 }],
-      phase2: [{ type: 'laser', every: 5.5 }, { type: 'spiral', every: 6.5, dur: 2.2 }],
+      attacks: [{ type: 'fan', every: 2.0, n: 4, spread: 0.26 }, { type: 'rain', every: 5.0, n: 3 }],
+      phase2: [{ type: 'laser', every: 7 }, { type: 'spiral', every: 9, dur: 1.4 }],
       shield: { half: 0.95 },
-      moves: [{ type: 'slam', from: 3, every: 8, first: 3 }],
+      moves: [{ type: 'slam', from: 3, every: 10, first: 3 }],
       intro: 'A turning SHIELD blocks shots. Dodge the red line and the slam!',
     },
     {
       // Gimmick: summons tough zeros, and BOUNCES around the screen from phase 2.
       name: 'THE PRODUCT', glyph: '×', hue: 40, hp: 90, value: 4, reward: 160, sides: 8,
-      attacks: [{ type: 'summon', every: 3.6, n: 2, kind: 'zero' }, { type: 'fan', every: 1.8, n: 5, spread: 0.26 }],
-      phase2: [{ type: 'ring', every: 3.2, n: 12 }],
-      moves: [{ type: 'bounce', from: 2, every: 11, first: 6, dur: 5 }],
+      attacks: [{ type: 'summon', every: 4.2, n: 2, kind: 'zero' }, { type: 'fan', every: 1.9, n: 4, spread: 0.26 }],
+      phase2: [{ type: 'ring', every: 5.0, n: 8 }],
+      moves: [{ type: 'bounce', from: 2, every: 13, first: 7, dur: 4.5 }],
       intro: 'It BOUNCES! Zeros are deadly. Keep moving.',
     },
     {
       // Gimmick: TELEPORTS and drops sudden "÷" blasts where you stand: leave the red circle!
-      name: 'THE QUOTIENT', glyph: '÷', hue: 340, hp: 135, value: 6, reward: 260, sides: 5,
-      attacks: [{ type: 'fan', every: 1.6, n: 6, spread: 0.2 }, { type: 'rain', every: 3.0, n: 7 }, { type: 'fall', every: 3.6, n: 3 }],
-      phase2: [{ type: 'spiral', every: 5.5, dur: 2.4 }, { type: 'ring', every: 3.6, n: 14 }, { type: 'fall', every: 2.6, n: 4 }],
+      name: 'THE QUOTIENT', glyph: '÷', hue: 340, hp: 125, value: 3, reward: 260, sides: 5,
+      // fewer red bullets (they cut your score): the danger comes from the blasts and the teleport instead
+      attacks: [{ type: 'fan', every: 2.2, n: 3, spread: 0.3 }, { type: 'rain', every: 4.6, n: 3 }, { type: 'fall', every: 3.8, n: 3 }],
+      phase2: [{ type: 'ring', every: 5.0, n: 8 }, { type: 'fall', every: 6.5, n: 2 }],
       moves: [{ type: 'teleport', from: 1, every: 6, first: 4 }, { type: 'teleport', from: 2, every: 3.5, first: 2 }],
       intro: 'It TELEPORTS and drops blasts. Leave the red circles!',
     },
@@ -4236,6 +4238,8 @@ const __mod_game = (() => {
       this.phase = 'boss';
       this.gates.forEach((g) => { g.dead = true; });
       this.bullets = this.bullets.filter((b) => b.owner === 'player');
+      // the board is cleaned when a boss arrives: leftover red numbers pop (no reward) so nothing is left over to pile up
+      for (const t of this.tokens) if (t.role === 'bad' && !t.dead) { t.dead = true; this.explode(t.x, t.y, COLORS.bad, 0.5); }
       this.banner = { t: 0, dur: 2.6, boss: def };
       this.shake = Math.max(this.shake, 0.4);
       this.sfx.play('boss');
@@ -4845,7 +4849,11 @@ const __mod_game = (() => {
       const boss = this.boss;
       for (const act of boss.update(dt, this.player)) {
         if (act.type === 'bullets') {
+          // never more than the cap on screen at once, so red bullets cannot pile up and drain the score
+          const cap = CONFIG.bossBulletCap + 3 * (this.stageIndex % STAGES.length);
+          let room = cap - this.bullets.filter((b) => b.owner === 'enemy' && !b.dead).length;
           for (const s of act.list) {
+            if (room-- <= 0) break;
             this.bullets.push(new Bullet({ x: s.x, y: s.y, vx: s.vx, vy: s.vy, owner: 'enemy', kind: 'subBullet', value: s.value, radius: 11 }));
           }
         } else if (act.type === 'zone') {
