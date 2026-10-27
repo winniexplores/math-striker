@@ -228,7 +228,7 @@ const __mod_config = (() => {
     powerupDuration: { abs: 8, pi: 8, sq: 8, slow: 6, guard: 15, double: 8, freeze: 3.5 }, // seconds (slow-time counts game seconds)
     guardCharges: 3,          // GUARD power-up: how many hits it blocks
     slowFactor: 0.55,         // SLOW TIME power-up: the whole game runs at this speed
-    loopDifficultyStep: 0.18, // each full loop of 4 stages adds this much difficulty
+    loopDifficultyStep: 0.3,  // each full loop of 4 stages adds this much difficulty
     powerupInterval: [14, 22],                 // random gap between power-up drops
     piMagnet: { radius: 230, pull: 560 },
 
@@ -1988,7 +1988,8 @@ const __mod_spawner = (() => {
         if (this.obstacleTimer <= 0) {
           const [lo, hi] = stage.obstacles.interval;
           this.obstacleTimer = ((lo + (hi - lo) * this.rng()) / ctx.difficulty) * (hold ? 1.4 : 1);
-          const ob = this._makeObstacle(stage, ctx, hold);
+          // never a wall while a gate is on screen or about to come: it would block the answers
+          const ob = this._makeObstacle(stage, ctx, hold || gateOn || this.gateTimer < 3);
           obstacles.push(ob);
           // from stage 3 on, rocks sometimes come in pairs
           if (ob.kind === 'meteor' && stage.id >= 3 && this.rng() < 0.35) obstacles.push(this._makeObstacle(stage, ctx, true));
@@ -2009,7 +2010,10 @@ const __mod_spawner = (() => {
         if (this.gateTimer <= 0) {
           const [lo, hi] = CONFIG.gates.interval;
           this.gateTimer = lo + (hi - lo) * this.rng();
-          if (gates.length === 0 && ctx.intensity < 0.8) this._makeGates(stage, ctx, gates);
+          // wait until no wall is on screen, so a wall can never sit below (or run into) the answers
+          const wallOn = obstacles.some((o) => o.kind === 'wall' && !o.dead);
+          if (wallOn) this.gateTimer = 1;
+          else if (gates.length === 0 && ctx.intensity < 0.8) this._makeGates(stage, ctx, gates);
         }
       }
 
@@ -2742,27 +2746,43 @@ const __mod_boss = (() => {
    *   spiral a rotating stream for `dur` seconds  { dur }
    *   rain   n bullets dropping from the top      { n }
    *   summon spawn n hostile tokens               { n, kind }
+   *   laser  a warned horizontal band at your height
+   *   fall   n warned blasts (the first one aimed at you)
+   * Moves (the boss itself): slam, bounce, teleport.  Clones and a turning shield are per-boss gimmicks.
    */
   const BOSSES = [
     {
-      name: 'THE SUM', glyph: 'Σ', hue: 200, hp: 45, value: 3, reward: 80,
+      // Gimmick: at 60% health it splits into two CLONES. The boss is shielded until both are shot down.
+      name: 'THE SUM', glyph: 'Σ', hue: 200, hp: 45, value: 3, reward: 80, sides: 6,
       attacks: [{ type: 'fan', every: 1.7, n: 4, spread: 0.28 }, { type: 'rain', every: 4.2, n: 4 }],
       phase2: [{ type: 'ring', every: 3.4, n: 10 }],
+      clones: { at: 0.6, n: 2, hp: 7 },
+      intro: 'It splits in two! Shoot the CLONES first.',
     },
     {
-      name: 'THE DIFFERENCE', glyph: '−', hue: 285, hp: 65, value: 4, reward: 120,
+      // Gimmick: a turning SHIELD (shots hitting it are blocked), a warned LASER band, and a SLAM at the end.
+      name: 'THE DIFFERENCE', glyph: '−', hue: 285, hp: 65, value: 4, reward: 120, sides: 4,
       attacks: [{ type: 'fan', every: 1.6, n: 5, spread: 0.24 }, { type: 'rain', every: 3.8, n: 5 }],
-      phase2: [{ type: 'spiral', every: 5.5, dur: 2.2 }],
+      phase2: [{ type: 'laser', every: 5.5 }, { type: 'spiral', every: 6.5, dur: 2.2 }],
+      shield: { half: 0.95 },
+      moves: [{ type: 'slam', from: 3, every: 8, first: 3 }],
+      intro: 'A turning SHIELD blocks shots. Dodge the red line and the slam!',
     },
     {
-      name: 'THE PRODUCT', glyph: '×', hue: 40, hp: 90, value: 4, reward: 160,
+      // Gimmick: summons tough zeros, and BOUNCES around the screen from phase 2.
+      name: 'THE PRODUCT', glyph: '×', hue: 40, hp: 90, value: 4, reward: 160, sides: 8,
       attacks: [{ type: 'summon', every: 3.6, n: 2, kind: 'zero' }, { type: 'fan', every: 1.8, n: 5, spread: 0.26 }],
       phase2: [{ type: 'ring', every: 3.2, n: 12 }],
+      moves: [{ type: 'bounce', from: 2, every: 11, first: 6, dur: 5 }],
+      intro: 'It BOUNCES! Zeros are deadly. Keep moving.',
     },
     {
-      name: 'THE QUOTIENT', glyph: '÷', hue: 340, hp: 120, value: 5, reward: 220,
-      attacks: [{ type: 'fan', every: 1.6, n: 6, spread: 0.2 }, { type: 'rain', every: 2.6, n: 7 }],
-      phase2: [{ type: 'spiral', every: 6, dur: 2.4 }, { type: 'ring', every: 4, n: 14 }],
+      // Gimmick: TELEPORTS and drops sudden "÷" blasts where you stand: leave the red circle!
+      name: 'THE QUOTIENT', glyph: '÷', hue: 340, hp: 135, value: 6, reward: 260, sides: 5,
+      attacks: [{ type: 'fan', every: 1.6, n: 6, spread: 0.2 }, { type: 'rain', every: 3.0, n: 7 }, { type: 'fall', every: 3.6, n: 3 }],
+      phase2: [{ type: 'spiral', every: 5.5, dur: 2.4 }, { type: 'ring', every: 3.6, n: 14 }, { type: 'fall', every: 2.6, n: 4 }],
+      moves: [{ type: 'teleport', from: 1, every: 6, first: 4 }, { type: 'teleport', from: 2, every: 3.5, first: 2 }],
+      intro: 'It TELEPORTS and drops blasts. Leave the red circles!',
     },
   ];
 
@@ -2778,7 +2798,8 @@ const __mod_boss = (() => {
       this.maxHp = Math.round(def.hp * CONFIG.bossHpScale * (1 + 0.3 * (diff - 1)));
       this.hp = this.maxHp;
       this.value = def.value + 2 + Math.floor((o.stagesCleared || 0) / 2);
-      this.speedMul = 1 + 0.12 * (diff - 1);
+      this.speedMul = 1 + 0.3 * (diff - 1);  // later loops: faster boss, faster attacks
+      this.loop = Math.floor((o.stagesCleared || 0) / 4);
       this.x = W / 2;
       this.y = -90;
       this.homeY = 150;
@@ -2792,16 +2813,40 @@ const __mod_boss = (() => {
       this.timers = def.attacks.map((a) => a.every * 0.7);
       this.timers2 = def.phase2.map((a) => a.every * 0.5);
       this.spiral = null;
+      this.moves = (def.moves || []).map((m) => ({ ...m, timer: m.first ?? m.every }));
+      this.move = null;           // the special move in progress, or null
+      this.clones = [];
+      this.clonesDone = false;
+      this.shieldAng = 0;         // turning shield: 0 = facing straight down
+      this.alpha = 1;
+      this.vulnMul = 1;           // >1 while the boss is resting after a slam
+      this.trail = [];
+    }
+
+    /** Is a point (a player shot) on the covered side of the turning shield? */
+    shieldBlocks(bx, by) {
+      if (!this.def.shield) return false;
+      let d = Math.atan2(bx - this.x, by - this.y) - this.shieldAng;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      return Math.abs(d) < this.def.shield.half;
+    }
+
+    /** Damage to a clone. Returns true if it died. */
+    hitClone(c, dmg) {
+      c.hp -= dmg;
+      c.flash = 0.07;
+      if (c.hp <= 0) { c.dead = true; this.clones = this.clones.filter((x) => !x.dead); return true; }
+      return false;
     }
 
     get label() { return Math.ceil(this.hp); }
-    get hurtable() { return this.state === 'fight'; }
+    get hurtable() { return this.state === 'fight' && this.clones.length === 0 && this.alpha > 0.6; }
     get ratio() { return clamp(this.hp / this.maxHp, 0, 1); }
 
     /** Returns true if this hit killed the boss. */
     hit(dmg) {
       if (!this.hurtable || this.dead) return false;
-      this.hp -= dmg;
+      this.hp -= dmg * this.vulnMul;
       this.flash = 0.07;
       if (this.hp <= 0) { this.hp = 0; this.dead = true; return true; }
       if (this.phase === 1 && this.hp <= this.maxHp * 0.5) this.phase = 2;
@@ -2821,17 +2866,55 @@ const __mod_boss = (() => {
         return actions;
       }
       this.fightTime += dt;
-      const amp = Math.min(150, W / 2 - this.radius - 10);
-      // Motion is measured from the moment the fight starts and eases in, so there is no jump:
-      // the boss stops at the centre and then smoothly starts to sweep left and right.
-      const ease = clamp(this.fightTime / 1.2, 0, 1);
-      this.x = W / 2 + Math.sin(this.fightTime * 0.9 * this.speedMul) * amp * ease;
-      this.y = this.homeY + Math.sin(this.fightTime * 1.7) * 14 * ease;
+      if (this.def.shield) this.shieldAng += dt * (this.phase >= 2 ? 1.9 : 1.3) * this.speedMul;
+      this.clones.forEach((c, i) => {
+        c.flash = Math.max(0, (c.flash || 0) - dt);
+        const a = this.t * 1.5 + i * Math.PI;
+        c.x = this.x + Math.cos(a) * 105;
+        c.y = this.y + 36 + Math.sin(a) * 26;
+        c.fire -= dt;
+        if (c.fire <= 0) {
+          c.fire = 2.1;
+          const aim = Math.atan2(player.x - c.x, player.y - c.y);
+          actions.push({ type: 'bullets', list: [{ x: c.x, y: c.y + 12, vx: Math.sin(aim) * 170, vy: Math.cos(aim) * 170, value: Math.max(2, this.value - 1) }] });
+        }
+      });
+      if (this.def.clones && !this.clonesDone && this.hp <= this.maxHp * this.def.clones.at) {
+        this.clonesDone = true;
+        const n = this.def.clones.n;
+        for (let i = 0; i < n; i++) this.clones.push({ x: this.x, y: this.y, hp: Math.round(this.def.clones.hp * (this.maxHp / (this.def.hp * CONFIG.bossHpScale))), max: 0, fire: 1 + i * 0.6, flash: 0 });
+        this.clones.forEach((c) => { c.max = c.hp; });
+        actions.push({ type: 'clones' });
+      }
 
       const rate = (this.phase === 3 ? 1.7 : this.phase === 2 ? 1.3 : 1.1) * this.speedMul;
-      this.def.attacks.forEach((a, i) => { this.timers[i] -= dt * rate; if (this.timers[i] <= 0) { this.timers[i] = a.every; this._fire(a, player, actions); } });
-      if (this.phase >= 2) {
-        this.def.phase2.forEach((a, i) => { this.timers2[i] -= dt * rate; if (this.timers2[i] <= 0) { this.timers2[i] = a.every; this._fire(a, player, actions); } });
+
+      // --- special moves (slam / bounce / teleport) -----------------------------
+      if (!this.move && this.clones.length === 0) {
+        for (const m of this.moves) {
+          if (this.phase < m.from) continue;
+          m.timer -= dt;
+          if (m.timer <= 0 && !this.move) { m.timer = m.every / Math.min(1.4, this.speedMul); this.move = this._startMove(m); }
+        }
+      }
+      if (this.move) {
+        this._runMove(dt, player, actions);
+      } else {
+        this.vulnMul = 1;
+        this.alpha = Math.min(1, this.alpha + dt * 3);
+        // Normal motion eases in from the moment the fight starts, then glides back after any move.
+        const amp = Math.min(150, W / 2 - this.radius - 10);
+        const ease = clamp(this.fightTime / 1.2, 0, 1);
+        const tx = W / 2 + Math.sin(this.fightTime * 0.9 * this.speedMul) * amp * ease;
+        const ty = this.homeY + Math.sin(this.fightTime * 1.7) * 14 * ease;
+        const k = this.returning ? Math.min(1, dt * 5) : 1;
+        this.x += (tx - this.x) * k;
+        this.y += (ty - this.y) * k;
+        if (this.returning && Math.hypot(tx - this.x, ty - this.y) < 6) this.returning = false;
+        this.def.attacks.forEach((a, i) => { this.timers[i] -= dt * rate; if (this.timers[i] <= 0) { this.timers[i] = a.every; this._fire(a, player, actions); } });
+        if (this.phase >= 2) {
+          this.def.phase2.forEach((a, i) => { this.timers2[i] -= dt * rate; if (this.timers2[i] <= 0) { this.timers2[i] = a.every; this._fire(a, player, actions); } });
+        }
       }
 
       if (this.spiral) {
@@ -2848,6 +2931,62 @@ const __mod_boss = (() => {
         if (s.t <= 0) this.spiral = null;
       }
       return actions;
+    }
+
+    _startMove(m) {
+      const mv = { type: m.type, t: 0, def: m };
+      if (m.type === 'bounce') { mv.vx = (this.rng() < 0.5 ? -1 : 1) * 215 * this.speedMul; mv.vy = 165 * this.speedMul; mv.dur = (m.dur || 5); mv.warn = 0.9; }
+      if (m.type === 'teleport') { mv.to = null; }
+      if (m.type === 'slam') { mv.locked = false; mv.dropped = false; }
+      return mv;
+    }
+
+    _endMove() { this.move = null; this.returning = true; this.alpha = 1; this.vulnMul = 1; this.trail = []; }
+
+    _runMove(dt, player, actions) {
+      const mv = this.move;
+      mv.t += dt;
+      if (mv.type === 'teleport') {
+        // fade out, jump to a new spot (away from the ship), fade back in
+        if (mv.t < 0.35) this.alpha = 1 - mv.t / 0.35;
+        else {
+          if (!mv.to) {
+            const side = player.x < W / 2 ? 1 : -1;
+            mv.to = clamp(W / 2 + side * (60 + this.rng() * 130), 70, W - 70);
+            this.x = mv.to; this.y = this.homeY + (this.rng() - 0.5) * 30;
+            actions.push({ type: 'flash', x: this.x, y: this.y });
+          }
+          this.alpha = clamp((mv.t - 0.35) / 0.35, 0, 1);
+          if (mv.t >= 0.7) this._endMove();
+        }
+      } else if (mv.type === 'bounce') {
+        if (mv.t < mv.warn) return; // flashes in place first: the telegraph
+        this.x += mv.vx * dt; this.y += mv.vy * dt;
+        const lo = this.radius + 6; const hi = W - this.radius - 6;
+        if (this.x < lo) { this.x = lo; mv.vx = Math.abs(mv.vx); } else if (this.x > hi) { this.x = hi; mv.vx = -Math.abs(mv.vx); }
+        if (this.y < 125) { this.y = 125; mv.vy = Math.abs(mv.vy); } else if (this.y > 470) { this.y = 470; mv.vy = -Math.abs(mv.vy); }
+        this.trail.push({ x: this.x, y: this.y, t: 0 });
+        if (this.trail.length > 7) this.trail.shift();
+        if (mv.t >= mv.warn + mv.dur) this._endMove();
+      } else if (mv.type === 'slam') {
+        if (mv.t < 0.55) {
+          this.x += (clamp(player.x, 60, W - 60) - this.x) * Math.min(1, dt * 6); // follow the ship...
+        } else if (!mv.locked) {
+          mv.locked = true; // ...then lock on and warn
+          actions.push({ type: 'zone', zone: { kind: 'column', x: this.x, w: 96, delay: 0.8, active: 0.4 } });
+        } else if (mv.t < 1.35) {
+          this.x += Math.sin(mv.t * 60) * 0.6; // shake
+        } else if (mv.t < 1.6) {
+          this.y += (575 - this.y) * Math.min(1, dt * 14); // DROP
+        } else if (mv.t < 2.7) {
+          this.y += (575 - this.y) * Math.min(1, dt * 14);
+          this.vulnMul = 1.6; // resting on the floor: take more damage
+          if (!mv.dropped) { mv.dropped = true; actions.push({ type: 'shake' }); }
+        } else if (mv.t < 3.4) {
+          this.vulnMul = 1;
+          this.y += (this.homeY - this.y) * Math.min(1, dt * 4);
+        } else this._endMove();
+      }
     }
 
     _bullet(angle, speed) {
@@ -2885,6 +3024,19 @@ const __mod_boss = (() => {
         case 'summon':
           actions.push({ type: 'summon', n: a.n, kind: a.kind });
           break;
+        case 'laser':
+          // a band across the whole screen at the ship's height: warning first, then it fires
+          actions.push({ type: 'zone', zone: { kind: 'band', y: clamp(player.y, 150, 680), h: 40, delay: 1.0, active: 0.35 } });
+          break;
+        case 'fall': {
+          for (let i = 0; i < a.n + this.loop; i++) { // one more blast every loop
+            const aimed = i === 0;
+            const x = aimed ? player.x : 40 + this.rng() * (W - 80);
+            const y = aimed ? player.y : 380 + this.rng() * 300;
+            actions.push({ type: 'zone', zone: { kind: 'blast', x, y: clamp(y, 160, 690), r: 44, delay: 0.95 + i * 0.12, active: 0.35 } });
+          }
+          break;
+        }
       }
     }
 
@@ -2892,22 +3044,38 @@ const __mod_boss = (() => {
       const d = this.def;
       const hue = d.hue;
       const col = this.flash > 0 ? '#ffffff' : `hsl(${hue},95%,62%)`;
+      const sides = d.sides || 6;
+      const mv = this.move;
+      const warning = mv && ((mv.type === 'bounce' && mv.t < mv.warn) || (mv.type === 'slam' && mv.t < 1.35));
+
+      // afterimages while bouncing
+      for (const g of this.trail) {
+        ctx.save();
+        ctx.globalAlpha = 0.12;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.arc(g.x, g.y, this.radius, 0, TAU);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       ctx.save();
       ctx.translate(this.x, this.y);
-      if (this.state === 'enter') ctx.globalAlpha = 0.6;
+      ctx.globalAlpha = (this.state === 'enter' ? 0.6 : 1) * clamp(this.alpha, 0, 1);
 
       // giant faint glyph behind the body
       drawText(ctx, d.glyph, 0, 4, { size: 130, color: `hsla(${hue},90%,60%,0.16)` });
 
-      // hexagon body
-      ctx.shadowColor = col;
+      // body: a different shape for every boss
+      ctx.shadowColor = warning && Math.floor(this.t * 10) % 2 === 0 ? '#ff4d6d' : col;
       ctx.shadowBlur = 24;
-      ctx.fillStyle = 'rgba(8,12,30,0.92)';
+      ctx.fillStyle = warning && Math.floor(this.t * 10) % 2 === 0 ? 'rgba(90,10,30,0.95)' : 'rgba(8,12,30,0.92)';
       ctx.strokeStyle = col;
       ctx.lineWidth = 4;
       ctx.beginPath();
-      for (let i = 0; i < 6; i++) {
-        const a = (i / 6) * TAU + this.t * 0.4;
+      for (let i = 0; i < sides; i++) {
+        const a = (i / sides) * TAU + this.t * 0.4 + (sides === 4 ? Math.PI / 4 : 0);
         const r = this.radius + (this.phase >= 2 ? (this.phase === 3 ? 7 : 4) * Math.sin(this.t * 9) : 0);
         i ? ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r) : ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
       }
@@ -2923,8 +3091,43 @@ const __mod_boss = (() => {
       ctx.arc(0, 0, this.radius * 0.72, 0, TAU);
       ctx.stroke();
 
+      // turning shield (shots that hit it are blocked)
+      if (d.shield) {
+        const h = d.shield.half;
+        ctx.strokeStyle = '#9be7ff';
+        ctx.lineWidth = 7;
+        ctx.shadowColor = '#9be7ff';
+        ctx.shadowBlur = 14;
+        ctx.beginPath();
+        ctx.arc(0, 0, this.radius + 12, Math.PI / 2 - (this.shieldAng + h), Math.PI / 2 - (this.shieldAng - h));
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+
       drawText(ctx, String(this.label), 0, 2, { size: this.label > 99 ? 28 : 34, color: '#ffffff', glow: 8 });
       ctx.restore();
+
+      // clones
+      for (const c of this.clones) {
+        ctx.save();
+        ctx.translate(c.x, c.y);
+        ctx.fillStyle = 'rgba(8,12,30,0.92)';
+        ctx.strokeStyle = c.flash > 0 ? '#ffffff' : col;
+        ctx.lineWidth = 3;
+        ctx.shadowColor = col;
+        ctx.shadowBlur = 14;
+        ctx.beginPath();
+        for (let i = 0; i < sides; i++) {
+          const a = (i / sides) * TAU - this.t * 0.8;
+          i ? ctx.lineTo(Math.cos(a) * 24, Math.sin(a) * 24) : ctx.moveTo(Math.cos(a) * 24, Math.sin(a) * 24);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+        drawText(ctx, String(Math.ceil(c.hp)), 0, 1, { size: 18, color: '#ffffff' });
+        ctx.restore();
+      }
     }
   }
   return { BOSSES, Boss };
@@ -3197,7 +3400,7 @@ const __mod_ui = (() => {
       const flash = Math.floor(b.t * 6) % 2 === 0;
       drawText(ctx, 'WARNING', W / 2, H / 2 - 20, { size: 18, color: flash ? COLORS.bad : '#ffffff', glow: 14 });
       drawText(ctx, b.boss.name, W / 2, H / 2 + 20, { size: 32, color: `hsl(${b.boss.hue},95%,68%)`, glow: 20 });
-      drawText(ctx, 'Shoot its number down to 0', W / 2, H / 2 + 54, { size: 13, color: '#b9c9e6', weight: 'normal' });
+      drawText(ctx, b.boss.intro || 'Shoot its number down to 0', W / 2, H / 2 + 54, { size: 13, color: '#b9c9e6', weight: 'normal' });
       ctx.globalAlpha = 1;
       return;
     }
@@ -3904,6 +4107,7 @@ const __mod_game = (() => {
       this.phase = 'stage';            // 'stage' | 'boss' | 'clear' (boss dead, waiting for the cards)
       this.upgradeDelay = 0;
       this.bossesDefeated = 0;
+      this.zones = [];                 // boss danger zones: red warning, then they hit
       this.gates = [];
       this.rings = [];
       this.grazeCd = 0;
@@ -3967,6 +4171,7 @@ const __mod_game = (() => {
       const b = this.boss;
       if (!b) return;
       this.boss = null;
+      this.zones = [];
       this.phase = 'clear';
       this.bossesDefeated++;
       this.rules.addScore(b.def.reward);
@@ -3988,6 +4193,7 @@ const __mod_game = (() => {
     bossEscapes() {
       this.addText(this.boss.x, this.boss.y, 'THE BOSS ESCAPED', COLORS.hazard, 20);
       this.boss = null;
+      this.zones = [];
       this.phase = 'stage';
       this.advanceStage();
     }
@@ -4562,6 +4768,18 @@ const __mod_game = (() => {
           for (const s of act.list) {
             this.bullets.push(new Bullet({ x: s.x, y: s.y, vx: s.vx, vy: s.vy, owner: 'enemy', kind: 'subBullet', value: s.value, radius: 11 }));
           }
+        } else if (act.type === 'zone') {
+          this.zones.push({ ...act.zone, t: 0, hit: false });
+          this.sfx.play('boss');
+        } else if (act.type === 'clones') {
+          this.addText(boss.x, boss.y + 60, 'CLONES!', COLORS.bad, 26);
+          this.explode(boss.x, boss.y, `hsl(${boss.def.hue},95%,62%)`, 2);
+          this.shake = 0.6;
+        } else if (act.type === 'flash') {
+          this.explode(act.x, act.y, `hsl(${boss.def.hue},95%,62%)`, 1.5);
+        } else if (act.type === 'shake') {
+          this.shake = 0.8;
+          this.sfx.play('explode');
         } else if (act.type === 'summon') {
           for (let i = 0; i < act.n; i++) {
             this.tokens.push(new Token({ kind: 'int', value: 0, op: this.stage.op, x: boss.x + (i - (act.n - 1) / 2) * 56, y: boss.y + 30, vy: 115, hp: Math.ceil(CONFIG.zeroHp / 2) }));
@@ -4587,6 +4805,9 @@ const __mod_game = (() => {
       const p = this.player;
       const magnet = this.rules.magnetActive;
       const fdt = this.rules.freezeActive ? 0 : dt; // FREEZE: enemies, their bullets and rocks stand still
+
+      for (const z of this.zones) z.t += fdt;
+      this.zones = this.zones.filter((z) => z.t < z.delay + z.active);
 
       for (const t of this.tokens) {
         t.update(t.role === 'good' ? dt : fdt);
@@ -4677,8 +4898,20 @@ const __mod_game = (() => {
         const bs = this.boss;
         for (const b of this.bullets) {
           if (b.dead || b.owner !== 'player') continue;
+          const clone = bs.clones.find((c) => hits(b.x, b.y, b.radius, c.x, c.y, 24));
+          if (clone) {
+            b.dead = true;
+            this.burst(b.x, b.y, '#ffffff', 3, 110);
+            if (bs.hitClone(clone, b.damage)) {
+              this.explode(clone.x, clone.y, `hsl(${bs.def.hue},95%,62%)`, 2);
+              this.addText(clone.x, clone.y - 20, bs.clones.length ? 'CLONE DOWN' : 'CLONES DOWN!', COLORS.good, 18);
+              this.sfx.play('explode');
+            } else this.sfx.play('kill');
+            continue;
+          }
           if (hits(b.x, b.y, b.radius, bs.x, bs.y, bs.radius)) {
             b.dead = true;
+            if (bs.shieldBlocks(b.x, b.y)) { this.burst(b.x, b.y, '#9be7ff', 3, 80); this.sfx.play('graze'); continue; } // the shield blocks it
             if (!bs.hurtable) { this.burst(b.x, b.y, '#ffffff', 2, 60); continue; } // still arriving: shielded
             const killed = bs.hit(b.damage);
             this.burst(b.x, b.y, '#ffffff', 3, 110);
@@ -4752,6 +4985,16 @@ const __mod_game = (() => {
         }
         if (this.invuln <= 0 && this.boss && hits(p.x, p.y, p.hitRadius, this.boss.x, this.boss.y, this.boss.radius * 0.8)) {
           this.loseLife(this.boss, 'BOSS HIT');
+        }
+        // boss danger zones: only hurt while ACTIVE (after the red warning)
+        for (const z of this.zones) {
+          if (this.invuln > 0) break;
+          if (z.t < z.delay) continue;
+          const r = p.hitRadius;
+          const inside = z.kind === 'band' ? Math.abs(p.y - z.y) < z.h / 2 + r
+            : z.kind === 'column' ? Math.abs(p.x - z.x) < z.w / 2 + r
+            : Math.hypot(p.x - z.x, p.y - z.y) < z.r + r;
+          if (inside) { this.loseLife(z, 'DODGE THE RED!'); break; }
         }
       }
 
@@ -4968,6 +5211,11 @@ const __mod_game = (() => {
           this.killToken(t, false);
         }
       }
+      if (this.boss && this.boss.clones.length) {
+        for (const c of [...this.boss.clones]) {
+          if (this.boss.hitClone(c, CONFIG.bombBossDamage)) this.explode(c.x, c.y, `hsl(${this.boss.def.hue},95%,62%)`, 2);
+        }
+      }
       if (this.boss && this.boss.hurtable) {
         // the bomb also hurts a boss (and rattles a shielded one)
         this.addText(this.boss.x, this.boss.y + 50, `-${CONFIG.bombBossDamage}`, COLORS.violet, 22);
@@ -5100,11 +5348,47 @@ const __mod_game = (() => {
       ctx.globalAlpha = 1;
     }
 
+    /** Boss danger zones: a pulsing red outline while warning, solid and bright while they hit. */
+    drawZones(ctx) {
+      for (const z of this.zones) {
+        const warn = z.t < z.delay;
+        const k = warn ? z.t / z.delay : 1;
+        ctx.save();
+        const pulse = 0.5 + 0.5 * Math.sin(this.time * 22);
+        ctx.fillStyle = warn ? `rgba(255,60,90,${0.1 + 0.18 * k * pulse})` : 'rgba(255,240,200,0.85)';
+        ctx.strokeStyle = warn ? `rgba(255,77,109,${0.5 + 0.5 * pulse})` : '#ffffff';
+        ctx.lineWidth = warn ? 3 : 5;
+        ctx.shadowColor = '#ff4d6d';
+        ctx.shadowBlur = warn ? 8 : 24;
+        if (z.kind === 'band') {
+          ctx.fillRect(0, z.y - z.h / 2, W, z.h);
+          ctx.strokeRect(0, z.y - z.h / 2, W, z.h);
+        } else if (z.kind === 'column') {
+          ctx.fillRect(z.x - z.w / 2, 0, z.w, H);
+          ctx.strokeRect(z.x - z.w / 2, 0, z.w, H);
+        } else {
+          ctx.beginPath();
+          ctx.arc(z.x, z.y, warn ? z.r : z.r * 1.15, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          if (warn) { // a shrinking ring shows when it lands
+            ctx.beginPath();
+            ctx.arc(z.x, z.y, z.r * (2.2 - 1.2 * k), 0, Math.PI * 2);
+            ctx.stroke();
+          }
+          ctx.shadowBlur = 0;
+          drawText(ctx, '÷', z.x, z.y + 2, { size: warn ? 26 : 40, color: warn ? '#ff9db0' : '#ff4d6d', glow: 8 });
+        }
+        ctx.restore();
+      }
+    }
+
     drawWorld(ctx) {
       this.obstacles.forEach((o) => o.draw(ctx));
       this.powerups.forEach((u) => u.draw(ctx));
       this.tokens.forEach((t) => t.draw(ctx));
       this.gates.forEach((g) => g.draw(ctx)); // on top, so a pickup never hides an answer
+      this.drawZones(ctx);
       if (this.boss) this.boss.draw(ctx);
       this.bullets.forEach((b) => b.draw(ctx));
 
