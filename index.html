@@ -254,7 +254,7 @@ const __mod_config = (() => {
     slowmo: { lastLifeSecs: 0.9, lastLifeScale: 0.35, deathScale: 0.4, deathSecs: 0.7 },
     bigGainFactor: 2,         // a touch that multiplies your score by this much or more triggers the gold flash
 
-    // --- Ranked mode (weekly season, same enemy sequence for everybody) ----------------
+    // --- Ranked mode (monthly season, same enemy sequence for everybody) ----------------
     // The board keeps ONE row per player name: your best score of the season.
     // A tier is reached when your best score this season reaches `min`.
     ranked: {
@@ -2507,9 +2507,9 @@ const __mod_profile = (() => {
 /* ======================= FILE: ranked.js ======================= */
 const __mod_ranked = (() => {
   // =============================================================================
-  // ranked.js  -  Ranked mode: weekly seasons, tiers and the one-row-per-name board.
+  // ranked.js  -  Ranked mode: monthly seasons, tiers and the one-row-per-name board.
   //
-  //   * A SEASON is one ISO week (Monday to Sunday). Everybody in a season gets the
+  //   * A SEASON is one calendar month. Everybody in a season gets the
   //     same seed, so the enemy sequence is the same for every player.
   //   * A TIER is decided by your best score this season.
   //   * The RANKED BOARD has ONE row per player NAME (typed by the player): their best
@@ -2520,14 +2520,22 @@ const __mod_ranked = (() => {
   const { hash53 } = __mod_rng;
   const { cleanName, normalizeUrl, isSheetUrl, sheetPost, sheetGet } = __mod_leaderboard;
 
-  /** '2026-W43' for the ISO week containing `date`. */
+  /**
+   * '2026-M10' for the calendar MONTH containing `date`, counted in Philippine time (UTC+8)
+   * so every phone in the school flips to the new season at the same moment.
+   * (The "M" stops Google Sheets from turning the id into a date.)
+   */
   function seasonId(date = new Date()) {
-    const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
-    const day = d.getUTCDay() || 7;                 // Monday = 1 ... Sunday = 7
-    d.setUTCDate(d.getUTCDate() + 4 - day);         // move to the Thursday of this week
-    const yearStart = Date.UTC(d.getUTCFullYear(), 0, 1);
-    const week = Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
-    return `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+    const d = new Date(date.getTime() + 8 * 3600 * 1000);
+    return `${d.getUTCFullYear()}-M${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  }
+
+  const MONTHS = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+
+  /** '2026-M10' -> 'OCT 2026' (what the player sees). Unknown ids are shown as they are. */
+  function seasonLabel(id) {
+    const m = /^(\d{4})-M(\d{2})$/.exec(String(id));
+    return m ? `${MONTHS[Number(m[2]) - 1] || m[2]} ${m[1]}` : String(id);
   }
 
   /** Number seed for a season id (same season = same seed on every phone). */
@@ -2674,7 +2682,7 @@ const __mod_ranked = (() => {
       } catch { return null; }
     }
   }
-  return { seasonId, seasonSeed, tierFor, nextTier, nameKey, RankedBoard };
+  return { seasonId, seasonLabel, seasonSeed, tierFor, nextTier, nameKey, RankedBoard };
 })();
 
 /* ======================= FILE: combo.js ======================= */
@@ -3199,7 +3207,7 @@ const __mod_ui = (() => {
   const { STAGES } = __mod_stages;
   const { drawText, drawShip, drawHeart, pathRoundRect } = __mod_draw;
   const { POWERUP_INFO, COLORS } = __mod_entities;
-  const { tierFor, nextTier } = __mod_ranked;
+  const { tierFor, nextTier, seasonLabel } = __mod_ranked;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -3381,7 +3389,7 @@ const __mod_ui = (() => {
     }
 
     if (game.mode === 'ranked') {
-      drawText(ctx, `RANKED  ${game.season}`, W / 2, H - 12, { size: 10, color: '#6f86ad' });
+      drawText(ctx, `RANKED  ${seasonLabel(game.season)}`, W / 2, H - 12, { size: 10, color: '#6f86ad' });
     }
   }
 
@@ -3453,7 +3461,7 @@ const __mod_ui = (() => {
     if (!ranked) {
       drawText(ctx, 'Relaxed endless run  ·  classic boards', W / 2, 206, { size: 12, color: '#9fb6d8', weight: 'normal' });
     } else {
-      drawText(ctx, `Season ${game.rankedBoard.season}  ·  same enemies for everyone  ·  tiers`, W / 2, 206, { size: 11, color: COLORS.gold, weight: 'normal' });
+      drawText(ctx, `Season ${seasonLabel(game.rankedBoard.season)}  ·  same enemies for everyone  ·  tiers`, W / 2, 206, { size: 11, color: COLORS.gold, weight: 'normal' });
       drawText(ctx, `Your best: ${tierFor(game.rankedBoard.best(game.leaderboard.lastName)).name}`, W / 2, 224, { size: 12, color: '#9fb6d8', weight: 'normal' });
     }
 
@@ -3496,28 +3504,30 @@ const __mod_ui = (() => {
       });
     });
 
-    const pulse = 0.65 + 0.35 * Math.sin(game.time * 4);
+    // Tapping a card only SELECTS the pilot (so you can change your mind); START begins the run.
+    const pick = CHARACTERS[game.menuIndex] || CHARACTERS[0];
+    const pulse = 0.8 + 0.2 * Math.sin(game.time * 4);
     ctx.globalAlpha = pulse;
-    drawText(ctx, game.desktop ? 'CLICK A PILOT  (or ← → and ENTER)' : 'TAP A PILOT TO START', W / 2, 552, { size: 14, color: '#ffffff', glow: 8 });
+    game.menuButtons.push({ id: 'start', ...drawButton(ctx, { x: W / 2 - 200, y: 540, w: 400, h: 40 }, `START  ·  ${pick.name}`, pick.color) });
     ctx.globalAlpha = 1;
 
-    game.menuButtons.push({ id: 'howto', ...drawButton(ctx, { x: W / 2 - 200, y: 566, w: 195, h: 40 }, 'HOW TO PLAY', COLORS.good) });
-    game.menuButtons.push({ id: 'board', ...drawButton(ctx, { x: W / 2 + 5, y: 566, w: 195, h: 40 }, 'LEADERBOARD', COLORS.gold) });
+    game.menuButtons.push({ id: 'howto', ...drawButton(ctx, { x: W / 2 - 200, y: 586, w: 195, h: 34 }, 'HOW TO PLAY', COLORS.good) });
+    game.menuButtons.push({ id: 'board', ...drawButton(ctx, { x: W / 2 + 5, y: 586, w: 195, h: 34 }, 'LEADERBOARD', COLORS.gold) });
 
     // Player and install row
     const p = game.profile;
     const who = p?.has ? p.name : 'NOT REGISTERED';
     if (game.standalone) {
-      game.menuButtons.push({ id: 'switch', ...drawButton(ctx, { x: W / 2 - 200, y: 614, w: 400, h: 34 }, `PLAYER: ${who}  ·  SWITCH`, '#cfe0ff') });
+      game.menuButtons.push({ id: 'switch', ...drawButton(ctx, { x: W / 2 - 200, y: 626, w: 400, h: 30 }, `PLAYER: ${who}  ·  SWITCH`, '#cfe0ff') });
     } else {
-      game.menuButtons.push({ id: 'switch', ...drawButton(ctx, { x: W / 2 - 200, y: 614, w: 255, h: 34 }, `PLAYER: ${who}  ·  SWITCH`, '#cfe0ff') });
-      game.menuButtons.push({ id: 'install', ...drawButton(ctx, { x: W / 2 + 65, y: 614, w: 135, h: 34 }, 'INSTALL', '#8fb3d9') });
+      game.menuButtons.push({ id: 'switch', ...drawButton(ctx, { x: W / 2 - 200, y: 626, w: 255, h: 30 }, `PLAYER: ${who}  ·  SWITCH`, '#cfe0ff') });
+      game.menuButtons.push({ id: 'install', ...drawButton(ctx, { x: W / 2 + 65, y: 626, w: 135, h: 30 }, 'INSTALL', '#8fb3d9') });
     }
 
-    drawText(ctx, game.desktop ? 'ARROWS / WASD fly  ·  auto-fire  ·  B = Prime Bomb  ·  P = pause' : 'DRAG to fly  ·  auto-fire  ·  BOMB = Prime Bomb', W / 2, 668, { size: 12, color: '#b9c9e6', weight: 'normal' });
-    drawText(ctx, 'Your SCORE is your health. Beat a boss to level up.', W / 2, 688, { size: 12, color: COLORS.gold, weight: 'normal' });
+    drawText(ctx, game.desktop ? 'ARROWS / WASD fly  ·  auto-fire  ·  B = Prime Bomb  ·  P = pause' : 'DRAG to fly  ·  auto-fire  ·  BOMB = Prime Bomb', W / 2, 676, { size: 12, color: '#b9c9e6', weight: 'normal' });
+    drawText(ctx, 'Your SCORE is your health. Beat a boss to level up.', W / 2, 693, { size: 12, color: COLORS.gold, weight: 'normal' });
     if (game.highScore > 0) {
-      drawText(ctx, `BEST  ${game.highScore}`, W / 2, 708, { size: 12, color: '#8fb3d9' });
+      drawText(ctx, `BEST  ${game.highScore}`, W / 2, 710, { size: 12, color: '#8fb3d9' });
     }
 
     // Online status (top left)
@@ -3580,7 +3590,7 @@ const __mod_ui = (() => {
         ['BOSS', COLORS.bad, ['Every 45 seconds a giant number arrives.', 'Shoot it down to 0. Then pick 1 of 3 upgrades.']],
         ['MAKE N / SOLVE FOR N', COLORS.good, ['MAKE N: fly through the box that equals N.', 'SOLVE: find n in the equation. Right = bonus +', 'power-up. Wrong = lose a life.']],
         ['COMBO AND CLOSE CALL', COLORS.gold, ['Chain hits quickly for bonus points.', 'Skim past danger without touching it for more.']],
-        ['RANKED', COLORS.pink, ['Same enemies for everyone all week.', 'Climb the tiers and get on the world board.']],
+        ['RANKED', COLORS.pink, ['Same enemies for everyone all month.', 'Climb the tiers and get on the world board.']],
       ],
     },
   ];
@@ -3799,7 +3809,7 @@ const __mod_ui = (() => {
     }
     drawText(ctx, 'GAME OVER', W / 2, 232, { size: 46, color: COLORS.bad, glow: 20 });
 
-    drawText(ctx, ranked ? `RANKED RUN  ·  ${game.season}` : 'BEST SCORE REACHED', W / 2, 288, { size: 12, color: ranked ? COLORS.gold : '#8fb3d9' });
+    drawText(ctx, ranked ? `RANKED RUN  ·  ${seasonLabel(game.season)}` : 'BEST SCORE REACHED', W / 2, 288, { size: 12, color: ranked ? COLORS.gold : '#8fb3d9' });
     drawText(ctx, String(Math.round(game.peakScore)), W / 2, 326, { size: 38, color: '#ffffff', glow: 10 });
 
     const mins = Math.floor(game.runTime / 60);
@@ -3884,8 +3894,8 @@ const __mod_ui = (() => {
     }
     else if (tab === 'ranked') {
       const rb = game.rankedBoard;
-      if (rb.online) { rows = v.ranked.rows; status = v.ranked.status; caption = `season ${rb.season}  ·  one row per name`; }
-      else { rows = rb.localRows(); caption = `season ${rb.season}  ·  one row per name  ·  this phone only (shared board not connected)`; }
+      if (rb.online) { rows = v.ranked.rows; status = v.ranked.status; caption = `season ${seasonLabel(rb.season)}  ·  one row per name`; }
+      else { rows = rb.localRows(); caption = `season ${seasonLabel(rb.season)}  ·  one row per name  ·  this phone only (shared board not connected)`; }
     }
     drawText(ctx, caption, W / 2, 134, { size: 11, color: '#8fb3d9', weight: 'normal' });
 
@@ -3967,7 +3977,7 @@ const __mod_game = (() => {
   //          playing -> upgrade (pick 1 of 3 cards after a boss) -> playing
   //          and 'leaderboard' (opened from the menu or the game-over screen)
   // Modes:   CLASSIC  relaxed endless run, saved to the classic boards
-  //          RANKED   weekly season, same enemy sequence for everyone, tiers, and
+  //          RANKED   monthly season, same enemy sequence for everyone, tiers, and
   //                   a board with ONE row per player name (see ranked.js)
   // Stage flow: stage timer runs out -> BOSS -> boss dies -> upgrade card -> next stage
   //
@@ -4550,9 +4560,10 @@ const __mod_game = (() => {
           if (btn?.id === 'mode-classic') { this.mode = 'classic'; return true; }
           if (btn?.id === 'mode-ranked') { this.mode = 'ranked'; return true; }
           if (btn?.id === 'mute') { this.sfx.toggleMute(); return true; }
+          if (btn?.id === 'start') { this.beginFromMenu(this.menuIndex); return true; }
           let used = false;
           this.cardRects.forEach((r, i) => {
-            if (inRect(r)) { this.beginFromMenu(i); used = true; }
+            if (inRect(r)) { this.menuIndex = i; this.sfx.play('card'); used = true; } // just select: START begins
           });
           return used;
         }
