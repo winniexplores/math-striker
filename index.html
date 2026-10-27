@@ -248,7 +248,7 @@ const __mod_config = (() => {
     bombBossDamage: 8,        // a Prime Bomb hurts a boss this much
     combo: { window: 2.2, milestone: 5, bonus: 4, maxBonus: 30 }, // chain kills/pickups within `window` secs
     graze: { margin: 15, reward: 2, cooldown: 0.18 },             // near-miss "CLOSE CALL" bonus
-    gates: { first: 15, interval: [20, 28], w: 128, h: 62, reward: 30, speed: 92 },
+    gates: { first: 12, firstStage1: 20, interval: [12, 16], w: 128, h: 62, reward: 40, speed: 92, solveChance: 0.5 }, // puzzles come often: MAKE N, and SOLVE FOR N from stage 2 on
     formations: { first: 10, interval: [8, 13] },
     splitMinValue: 4,         // hostile numbers this big may split in two when shot
     slowmo: { lastLifeSecs: 0.9, lastLifeScale: 0.35, deathScale: 0.4, deathSecs: 0.7 },
@@ -1829,7 +1829,50 @@ const __mod_gate = (() => {
       const j = Math.floor(rng() * (i + 1));
       [options[i], options[j]] = [options[j], options[i]];
     }
-    return { target, op, options };
+    return { kind: 'make', banner: `MAKE  ${target}`, target, op, options };
+  }
+
+  /**
+   * "SOLVE FOR N" puzzle: an equation with an unknown n, three possible values of n.
+   * The equation matches the stage's operation; from the second loop on it can take two steps.
+   * @returns {{kind:'solve', banner:string, target:number, op:string, options:{text:string,value:number,correct:boolean}[]}}
+   */
+  function makeSolve(op, rng, stagesCleared = 0) {
+    const sc = stagesCleared;
+    const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+    let banner; let n;
+    if (op === '−') {
+      const a = rint(rng, 1, 9);
+      if (rng() < 0.5) { n = a + rint(rng, 1, 9 + sc); banner = `n − ${a} = ${n - a}`; }
+      else { const b = rint(rng, 1, 8); n = rint(rng, 1, 9); banner = `${n + b} − n = ${b}`; }
+    } else if (op === '×') {
+      const a = rint(rng, 2, 9); n = rint(rng, 2, 9);
+      banner = sc >= 6 && rng() < 0.4 ? `½ × n = ${n}` : `${a} × n = ${a * n}`;
+      if (banner.startsWith('½')) n = n * 2;
+    } else if (op === '÷') {
+      const a = rint(rng, 2, 6); const b = rint(rng, 2, 9);
+      if (rng() < 0.6) { n = a * b; banner = `n ÷ ${a} = ${b}`; } else { n = b; banner = `${a * b} ÷ n = ${a}`; }
+    } else {
+      const a = rint(rng, 1, 9);
+      if (sc >= 4 && rng() < 0.5) { n = rint(rng, 2, 9); banner = `2n + ${a} = ${2 * n + a}`; } // two steps, second loop on
+      else { n = rint(rng, 2, 8 + sc); banner = rng() < 0.7 ? `n + ${a} = ${n + a}` : `${a} + n = ${n + a}`; }
+    }
+    const wrong = new Set();
+    const deltas = [-3, -2, -1, 1, 2, 3];
+    let guard = 0;
+    while (wrong.size < 2 && guard++ < 60) { const v = n + pick(deltas); if (v !== n && v >= 1) wrong.add(v); }
+    for (let v = n + 1; wrong.size < 2; v++) wrong.add(v);
+    const options = [{ text: `n = ${n}`, value: n, correct: true }, ...[...wrong].map((v) => ({ text: `n = ${v}`, value: v, correct: false }))];
+    for (let i = options.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [options[i], options[j]] = [options[j], options[i]]; }
+    return { kind: 'solve', banner, target: n, op, options };
+  }
+
+  /** Does `value` solve the banner equation? Used by tests. */
+  function checkSolve(banner, value) {
+    const [lhs, rhs] = banner.split('=').map((s) => s.trim());
+    const expr = lhs.replace(/−/g, '-').replace(/×/g, '*').replace(/÷/g, '/').replace(/½/g, '0.5').replace(/(\d)n/g, '$1*n');
+    // eslint-disable-next-line no-new-func
+    return Math.abs(new Function('n', `return ${expr};`)(value) - Number(rhs)) < 1e-9;
   }
 
   /** Evaluate an equation string like "7+5", "12−3", "4×6", "18÷3". For tests. */
@@ -1839,7 +1882,7 @@ const __mod_gate = (() => {
     const a = Number(m[1]); const b = Number(m[3]);
     return m[2] === '+' ? a + b : m[2] === '−' ? a - b : m[2] === '×' ? a * b : a / b;
   }
-  return { makeGate, evalEquation };
+  return { makeGate, makeSolve, checkSolve, evalEquation };
 })();
 
 /* ======================= FILE: spawner.js ======================= */
@@ -1854,7 +1897,7 @@ const __mod_spawner = (() => {
   const { CONFIG } = __mod_config;
   const { Token, PowerUp, Obstacle, Gate } = __mod_entities;
   const { operandEffect } = __mod_mathRules;
-  const { makeGate } = __mod_gate;
+  const { makeGate, makeSolve } = __mod_gate;
 
   const W = CONFIG.width;
   const TAU = Math.PI * 2;
@@ -1882,7 +1925,7 @@ const __mod_spawner = (() => {
      */
     onStageStart(stageIndex = 0) {
       this.formationTimer = stageIndex === 0 ? CONFIG.formations.first * 3 : CONFIG.formations.first;
-      this.gateTimer = stageIndex === 0 ? Infinity : CONFIG.gates.first;
+      this.gateTimer = stageIndex === 0 ? CONFIG.gates.firstStage1 : CONFIG.gates.first;
     }
 
     /**
@@ -1982,13 +2025,18 @@ const __mod_spawner = (() => {
 
     /** Three answer boxes for a MAKE-N puzzle. Only the first one carries the target. */
     _makeGates(stage, ctx, gates) {
-      const puzzle = makeGate(stage.op, this.rng, ctx.stagesCleared || 0);
+      const sc = ctx.stagesCleared || 0;
+      // the first stage is MAKE N only; afterwards the two puzzle types take turns at random
+      const solve = sc >= 1 && this.rng() < CONFIG.gates.solveChance;
+      const puzzle = (solve ? makeSolve : makeGate)(stage.op, this.rng, sc);
       const setId = ++this.gateSeq;
       const { w, h, speed } = CONFIG.gates;
       const xs = [W * 0.17, W * 0.5, W * 0.83];
       puzzle.options.forEach((o, i) => {
         const g = new Gate({ x: xs[i], y: -h, w, h, text: o.text, value: o.value, correct: o.correct, setId, vy: speed });
         g.target = puzzle.target;
+        g.banner = puzzle.banner;
+        g.kind = puzzle.kind;
         gates.push(g);
       });
     }
@@ -3103,19 +3151,20 @@ const __mod_ui = (() => {
     }
 
     // MAKE-N banner
-    const target = game.gateTarget;
-    if (target !== null && !game.boss) {
+    const banner = game.gateBanner;
+    if (banner !== null && !game.boss) {
       const pulse = 0.85 + 0.15 * Math.sin(game.time * 8);
       ctx.fillStyle = 'rgba(8,24,52,0.9)';
       ctx.strokeStyle = COLORS.cyan;
       ctx.lineWidth = 3;
       ctx.shadowColor = COLORS.cyan;
       ctx.shadowBlur = 14 * pulse;
-      pathRoundRect(ctx, W / 2 - 92, 64, 184, 38, 12);
+      const bw = Math.max(184, banner.length * 17 + 36);
+      pathRoundRect(ctx, W / 2 - bw / 2, 64, bw, 38, 12);
       ctx.fill();
       ctx.stroke();
       ctx.shadowBlur = 0;
-      drawText(ctx, `MAKE  ${target}`, W / 2, 84, { size: 24, color: '#ffffff', glow: 8 });
+      drawText(ctx, banner, W / 2, 84, { size: 24, color: '#ffffff', glow: 8 });
     }
 
     // Combo meter
@@ -3326,7 +3375,7 @@ const __mod_ui = (() => {
       title: 'BOSSES AND BONUSES',
       items: [
         ['BOSS', COLORS.bad, ['Every 45 seconds a giant number arrives.', 'Shoot it down to 0. Then pick 1 of 3 upgrades.']],
-        ['MAKE N GATES', COLORS.good, ['Fly through the box whose answer equals N.', 'Right = bonus and a power-up. Wrong = lose a life.']],
+        ['MAKE N / SOLVE FOR N', COLORS.good, ['MAKE N: fly through the box that equals N.', 'SOLVE: find n in the equation. Right = bonus +', 'power-up. Wrong = lose a life.']],
         ['COMBO AND CLOSE CALL', COLORS.gold, ['Chain hits quickly for bonus points.', 'Skim past danger without touching it for more.']],
         ['RANKED', COLORS.pink, ['Same enemies for everyone all week.', 'Climb the tiers and get on the world board.']],
       ],
@@ -3824,6 +3873,12 @@ const __mod_game = (() => {
       return g ? g.target : null;
     }
 
+    /** What the banner says right now: "MAKE  12" or an equation like "n + 3 = 8" (or null). */
+    get gateBanner() {
+      const g = this.gates.find((x) => !x.resolved && !x.dead && x.y > -20);
+      return g ? (g.banner || `MAKE  ${g.target}`) : null;
+    }
+
     /** Begin a fresh run with the given character id (and mode: 'classic' | 'ranked'). */
     startRun(characterId, mode = this.mode) {
       const character = CHARACTERS.find((c) => c.id === characterId) || CHARACTERS[0];
@@ -4136,7 +4191,9 @@ const __mod_game = (() => {
         const info = POWERUP_INFO[pu.kind];
         if (T(`pu-${pu.kind}`, `${info.glyph}  ${info.name}`, `${info.desc} Fly into it to use it.`, info.color)) return;
       }
-      if (this.gates.some((g) => !g.resolved && g.y > 30 && g.y < 450) && T('gate', 'MAKE N', 'Fly through the box whose answer equals N (shown at the top). Right: bonus and a free power-up. Wrong: you lose a life.', COLORS.good)) return;
+      const solveGate = this.gates.find((g) => !g.resolved && g.kind === 'solve' && g.y > 30 && g.y < 450);
+      if (solveGate && T('solve', 'SOLVE FOR N', 'Work out what n must be in the equation at the top. Fly through the box with the right n. Right: bonus and a free power-up. Wrong: you lose a life.', COLORS.good)) return;
+      if (this.gates.some((g) => !g.resolved && g.kind !== 'solve' && g.y > 30 && g.y < 450) && T('gate', 'MAKE N', 'Fly through the box whose answer equals N (shown at the top). Right: bonus and a free power-up. Wrong: you lose a life.', COLORS.good)) return;
       if (this.tokens.some((t) => t.kind === 'int' && t.value === 0 && t.op !== '+' && t.op !== '−' && t.y > 40 && t.y < 500)
         && T('zero', 'ZERO!', '×0 kills you and ÷0 costs a life. A zero takes many shots, so dodge it or use the BOMB.', '#ffffff')) return;
       if (this.boss && this.boss.state === 'fight' && T('boss', 'BOSS!', 'Shoot its number down to 0 and dodge its bullets. Touching it costs a life. Beat it to pick an upgrade.', COLORS.bad)) return;
@@ -4754,7 +4811,7 @@ const __mod_game = (() => {
         const kinds = this.spawner.powerKinds(this.stageIndex);
         const kind = kinds[Math.floor(this.runRng() * kinds.length)];
         this.rules.activatePowerup(kind);
-        this.addText(g.x, g.y - 30, `${g.text} = ${g.value}  CORRECT!  +${reward}`, COLORS.good, 18);
+        this.addText(g.x, g.y - 30, `${g.kind === 'solve' ? g.text : `${g.text} = ${g.value}`}  CORRECT!  +${reward}`, COLORS.good, 18);
         this.addText(g.x, g.y - 8, POWERUP_INFO[kind].name, POWERUP_INFO[kind].color, 15);
         this.explode(g.x, g.y, COLORS.good, 1.5);
         this.flash = { color: 'rgba(93,255,176,0.3)', t: 0.25 };
@@ -4762,7 +4819,7 @@ const __mod_game = (() => {
         this.chain();
       } else {
         g.resolved = 'wrong';
-        this.addText(g.x, g.y - 30, `${g.text} = ${g.value}  WRONG`, COLORS.bad, 18);
+        this.addText(g.x, g.y - 30, `${g.kind === 'solve' ? g.text : `${g.text} = ${g.value}`}  WRONG`, COLORS.bad, 18);
         this.sfx.play('wrong');
         if (this.invuln <= 0) this.loseLife(g, 'WRONG ANSWER');
       }
