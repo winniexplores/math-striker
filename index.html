@@ -7,7 +7,7 @@
   <meta name="description" content="A vertical arcade shooter where your score is your health and the enemies are numbers.">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-fullscreen">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="theme-color" content="#02060f">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -28,6 +28,7 @@ html, body {
 
 main {
   height: 100%;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -35,10 +36,8 @@ main {
 
 canvas {
   display: block;
-  height: min(100dvh, 150vw);
-  aspect-ratio: 2 / 3;
+  /* width and height are set by main.js (fit the window, keep the game's aspect ratio) */
   background: #040a18;
-  box-shadow: 0 0 60px rgba(77, 210, 255, 0.18);
   touch-action: none; /* stop page scroll/zoom gestures on the canvas */
 }
 
@@ -201,10 +200,30 @@ const __mod_config = (() => {
   // Change values here to rebalance the game without touching any logic.
   // =============================================================================
 
+  // The playfield is always 480 wide. On a tall phone it is also taller (up to 1000), so the game
+  // fills the screen instead of leaving empty bands above and below. 720 is the classic size.
+  function pickHeight() {
+    try {
+      if (typeof window === 'undefined' || !document?.body) return 720;
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom) 0';
+      document.body.appendChild(probe);
+      const cs = getComputedStyle(probe);
+      const inset = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+      probe.remove();
+      const w = window.innerWidth;
+      const h = window.innerHeight - inset;
+      if (!(w > 0) || w > h) return 720;           // computers and landscape: the classic size
+      return Math.max(720, Math.min(1000, Math.round((480 * h) / w)));
+    } catch { return 720; }
+  }
+  const HEIGHT = pickHeight();
+
   const CONFIG = {
     // --- Canvas (logical resolution; CSS scales it to fit the window) ----------
     width: 480,
-    height: 720,
+    height: HEIGHT,
+    yOff: (HEIGHT - 720) / 2,   // menus and boxes are laid out for 720 and centred by this much
     font: '"Courier New", ui-monospace, monospace',
 
     // --- Stage flow -------------------------------------------------------------
@@ -239,7 +258,7 @@ const __mod_config = (() => {
     // --- Touch controls (rectangles are in canvas coordinates) -----------------
     touch: {
       dragSensitivity: 1.3,                      // ship moves this much per pixel dragged
-      bomb: { x: 10, y: 646, w: 112, h: 46 },   // compact, but easy to see and hit
+      bomb: { x: 10, y: 646 + (HEIGHT - 720), w: 112, h: 46 },   // compact, but easy to see and hit
       pause: { x: 420, y: 66, w: 52, h: 40 },
       mute: { x: 362, y: 66, w: 52, h: 40 },
     },
@@ -720,7 +739,7 @@ const __mod_audio = (() => {
     constructor() {
       this.ctx = null;
       this.muted = false;
-      this.master = 0.12;   // overall volume
+      this.master = 0.12;   // overall volume (the player's setting scales it: see setLevel)
       this.lastPlayed = {}; // name -> timestamp, used to throttle rapid sounds
     }
 
@@ -729,6 +748,12 @@ const __mod_audio = (() => {
       const AC = globalThis.AudioContext || globalThis.webkitAudioContext;
       if (!AC) return;
       try { this.ctx = new AC(); } catch { this.ctx = null; }
+    }
+
+    /** Player's volume setting, 0 (silent) to 5. Level 3 is the original loudness. */
+    setLevel(n) {
+      this.level = Math.max(0, Math.min(5, Math.round(n)));
+      this.master = 0.12 * (this.level / 3);
     }
 
     toggleMute() {
@@ -768,6 +793,12 @@ const __mod_audio = (() => {
       this.nextTime = 0;
       this.timer = null;
       this.volume = 0.5;
+    }
+
+    /** Player's music setting, 0 (silent) to 5. Level 3 is the original loudness. */
+    setLevel(n) {
+      this.level = Math.max(0, Math.min(5, Math.round(n)));
+      this.volume = 0.5 * (this.level / 3);
     }
 
     setTheme(name) {
@@ -3514,6 +3545,23 @@ const __mod_ui = (() => {
     return rect;
   }
 
+  /** A little gear icon for the SETTINGS button. */
+  function drawGear(ctx, cx, cy, color) {
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 3;
+    for (let i = 0; i < 8; i++) {
+      const a = (i * Math.PI) / 4;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * 7, cy + Math.sin(a) * 7);
+      ctx.lineTo(cx + Math.cos(a) * 11, cy + Math.sin(a) * 11);
+      ctx.stroke();
+    }
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, 2.5, 0, Math.PI * 2); ctx.fill();
+  }
+
   /** A little speaker icon: waves when sound is on, a cross when it is muted. */
   function drawSpeaker(ctx, cx, cy, on, color) {
     ctx.fillStyle = color;
@@ -3772,6 +3820,15 @@ const __mod_ui = (() => {
     drawSpeaker(ctx, mu.x + mu.w / 2 - 3, mu.y + mu.h / 2, !game.sfx.muted, '#8fb3d9');
     game.menuButtons.push({ id: 'mute', ...mu });
 
+    // Settings (gear) next to the sound switch
+    const se = { x: W - 108, y: 14, w: 44, h: 36 };
+    ctx.strokeStyle = 'rgba(143,179,217,0.5)';
+    ctx.lineWidth = 1.5;
+    pathRoundRect(ctx, se.x, se.y, se.w, se.h, 9);
+    ctx.stroke();
+    drawGear(ctx, se.x + se.w / 2, se.y + se.h / 2, '#8fb3d9');
+    game.menuButtons.push({ id: 'settings', ...se });
+
     // Mode switch: CLASSIC | RANKED
     [['mode-ranked', 'RANKED', W / 2 - 200, '#ffd75e'], ['mode-daily', 'DAILY', W / 2 - 65, '#5dffb0'], ['mode-classic', 'CLASSIC', W / 2 + 70, '#4dd2ff']].forEach(([id, label, x, col]) => {
       const active = id === `mode-${game.mode}`;
@@ -4014,7 +4071,7 @@ const __mod_ui = (() => {
     const c = game.challenge;
     if (!c) return;
     ctx.fillStyle = 'rgba(2,6,16,0.78)';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, H);
     const x = 30, y = 220, w = W - 60, h = 250;
     ctx.fillStyle = '#07142a';
     ctx.strokeStyle = COLORS.gold;
@@ -4039,7 +4096,7 @@ const __mod_ui = (() => {
     if (!st) return;
     const p = st.pages[st.i];
     ctx.fillStyle = 'rgba(2,6,16,0.9)';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, H);
 
     if (p.ships) {
       drawShip(ctx, CHARACTERS[0], W / 2 - 80, 160, 1.5, game.time, 0);
@@ -4077,7 +4134,7 @@ const __mod_ui = (() => {
     const t = game.tip;
     if (!t) return;
     ctx.fillStyle = 'rgba(2,6,16,0.72)';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, H);
     // wrap the text to about 31 characters per line
     const words = t.text.split(' ');
     const lines = [];
@@ -4087,7 +4144,7 @@ const __mod_ui = (() => {
     }
     if (cur) lines.push(cur);
     const h = 120 + lines.length * 22 + 40;
-    const x = 40, w = W - 80, y = Math.round((H - h) / 2) - 30;
+    const x = 40, w = W - 80, y = Math.round((720 - h) / 2) - 30;
     ctx.fillStyle = '#07142a';
     ctx.strokeStyle = t.color;
     ctx.lineWidth = 3;
@@ -4123,7 +4180,7 @@ const __mod_ui = (() => {
   // -----------------------------------------------------------------------------
   function drawPause(ctx, game) {
     ctx.fillStyle = 'rgba(2,6,16,0.8)';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, H);
     drawText(ctx, 'PAUSED', W / 2, 200, { size: 42, color: '#ffffff', glow: 16 });
     const bx = W / 2 - 120;
     game.pauseButtons = [
@@ -4137,7 +4194,7 @@ const __mod_ui = (() => {
   /** "Pick 1 of 3" upgrade cards after a boss. */
   function drawUpgrade(ctx, game) {
     ctx.fillStyle = 'rgba(2,6,16,0.82)';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, H);
     drawText(ctx, 'BOSS DEFEATED', W / 2, 92, { size: 30, color: COLORS.gold, glow: 16 });
     drawText(ctx, 'CHOOSE 1 UPGRADE', W / 2, 128, { size: 15, color: '#cfe0ff' });
 
@@ -4176,7 +4233,7 @@ const __mod_ui = (() => {
 
   function drawGameOver(ctx, game) {
     ctx.fillStyle = 'rgba(2,6,16,0.84)';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, H);
     const ranked = game.mode === 'ranked';
 
     if (game.deathReason === 'lives') {
@@ -4357,7 +4414,7 @@ const __mod_ui = (() => {
     const st = game.stats;
     const d = st.data;
     ctx.fillStyle = 'rgba(2,6,16,0.82)';
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, H);
     const x = 24, y = 130, w = W - 48, h = 440;
     ctx.fillStyle = '#07142a';
     ctx.strokeStyle = '#5dffb0';
@@ -4389,7 +4446,43 @@ const __mod_ui = (() => {
     });
     drawText(ctx, 'tap anywhere to close', W / 2, y + h - 22, { size: 11, color: '#6f86ad', weight: 'normal' });
   }
-  return { drawHUD, drawBanner, drawMenu, HOW_PAGE_COUNT, drawHowTo, drawInstall, drawChallengeModal, drawStory, drawTip, drawToast, drawPause, drawUpgrade, drawGameOver, drawLeaderboard, drawStatsModal };
+
+  // SETTINGS box (menu): sound and music volume, mute, replay tips.
+  function drawSettingsModal(ctx, game) {
+    ctx.fillStyle = 'rgba(2,6,16,0.82)';
+    ctx.fillRect(0, -CONFIG.yOff, W, H);
+    const x = 24, y = 150, w = W - 48, h = 410;
+    ctx.fillStyle = '#07142a';
+    ctx.strokeStyle = COLORS.cyan;
+    ctx.lineWidth = 3;
+    ctx.shadowColor = COLORS.cyan; ctx.shadowBlur = 20;
+    pathRoundRect(ctx, x, y, w, h, 18);
+    ctx.fill(); ctx.stroke();
+    ctx.shadowBlur = 0;
+    drawText(ctx, 'SETTINGS', W / 2, y + 38, { size: 26, color: COLORS.cyan, glow: 12 });
+    game.settingsButtons = [];
+    const row = (label, key, idMinus, idPlus, ry) => {
+      drawText(ctx, label, x + 22, ry + 4, { size: 14, align: 'left', color: '#d3e0f5' });
+      const v = game.settings[key];
+      const bx = x + 150;
+      game.settingsButtons.push({ id: idMinus, ...drawButton(ctx, { x: bx, y: ry - 16, w: 38, h: 38 }, '−', '#8fb3d9') });
+      for (let i = 0; i < 5; i++) {
+        ctx.fillStyle = i < v ? COLORS.cyan : 'rgba(255,255,255,0.16)';
+        ctx.fillRect(bx + 48 + i * 17, ry - 5, 13, 18);
+      }
+      game.settingsButtons.push({ id: idPlus, ...drawButton(ctx, { x: bx + 140, y: ry - 16, w: 38, h: 38 }, '+', '#8fb3d9') });
+    };
+    row('SOUND FX', 'sfx', 'sfx-', 'sfx+', y + 100);
+    row('MUSIC', 'music', 'mus-', 'mus+', y + 164);
+    game.settingsButtons.push({ id: 'mute', ...drawButton(ctx, { x: x + 22, y: y + 208, w: w - 44, h: 40 }, game.sfx.muted ? 'SOUND IS OFF  (tap to turn on)' : 'SOUND IS ON  (tap to mute all)', game.sfx.muted ? COLORS.bad : COLORS.good) });
+    const q = game.settings.quality;
+    const qLabel = q === 'auto' ? `GRAPHICS: AUTO${game.settings.autoLow ? ' (smooth mode)' : ''}` : q === 'low' ? 'GRAPHICS: SMOOTH (LOW)' : 'GRAPHICS: BEAUTIFUL (HIGH)';
+    game.settingsButtons.push({ id: 'gfx', ...drawButton(ctx, { x: x + 22, y: y + 258, w: w - 44, h: 40 }, qLabel, COLORS.violet) });
+    drawText(ctx, 'Game lagging? Pick SMOOTH.', W / 2, y + 312, { size: 11, color: '#9fb6d8', weight: 'normal' });
+    game.settingsButtons.push({ id: 'tips', ...drawButton(ctx, { x: x + 22, y: y + 328, w: w - 44, h: 36 }, 'REPLAY TIPS', COLORS.gold) });
+    game.settingsButtons.push({ id: 'close', ...drawButton(ctx, { x: x + 22, y: y + 372, w: w - 44, h: 32 }, 'DONE', '#ffffff') });
+  }
+  return { drawHUD, drawBanner, drawMenu, HOW_PAGE_COUNT, drawHowTo, drawInstall, drawChallengeModal, drawStory, drawTip, drawToast, drawPause, drawUpgrade, drawGameOver, drawLeaderboard, drawStatsModal, drawSettingsModal };
 })();
 
 /* ======================= FILE: game.js ======================= */
@@ -4427,7 +4520,7 @@ const __mod_game = (() => {
   const { detectPlatform } = __mod_inapp;
   const { drawText } = __mod_draw;
   const { Leaderboard, cleanName } = __mod_leaderboard;
-  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, drawInstall, drawChallengeModal, drawStatsModal, drawToast, drawTip, drawStory, HOW_PAGE_COUNT } = __mod_ui;
+  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, drawInstall, drawChallengeModal, drawStatsModal, drawSettingsModal, drawToast, drawTip, drawStory, HOW_PAGE_COUNT } = __mod_ui;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -4476,6 +4569,10 @@ const __mod_game = (() => {
       this.tip = null;
       this.platform = detectPlatform(globalThis.navigator?.userAgent || '');
       this.mode = 'ranked';   // RANKED is the default mode
+      this.settings = this._loadSettings();   // { sfx: 0..5, music: 0..5 }
+      this.settingsOpen = false;
+      this.sfx.setLevel(this.settings.sfx);
+      this.music?.setLevel(this.settings.music);
       this.stats = options.stats || new Stats();
       this.statsOpen = false;   // the MY STATS box on the menu
       this.dailyResult = null;
@@ -4820,6 +4917,65 @@ const __mod_game = (() => {
     // First-time tips: the game pauses for a moment the FIRST time something appears
     // ---------------------------------------------------------------------------
 
+    _loadSettings() {
+      const d = { sfx: 3, music: 3, quality: 'auto', autoLow: false };
+      try {
+        const o = JSON.parse(globalThis.localStorage?.getItem('mathStriker.settings.v1') || '{}');
+        for (const k of ['sfx', 'music']) if (Number.isFinite(o[k])) d[k] = Math.max(0, Math.min(5, Math.round(o[k])));
+        if (['auto', 'low', 'high'].includes(o.quality)) d.quality = o.quality;
+        d.autoLow = o.autoLow === true;
+      } catch { /* private mode or bad data */ }
+      return d;
+    }
+
+    _saveSettings() {
+      try { globalThis.localStorage?.setItem('mathStriker.settings.v1', JSON.stringify(this.settings)); } catch { /* private mode */ }
+    }
+
+    /** True when the game should draw the light way (no glow, fewer sparks, lower resolution). */
+    get lowGfx() { return this.settings.quality === 'low' || (this.settings.quality === 'auto' && this.settings.autoLow); }
+
+    /** SETTINGS box: GRAPHICS AUTO -> LOW -> HIGH -> AUTO. */
+    cycleQuality() {
+      const order = ['auto', 'low', 'high'];
+      this.settings.quality = order[(order.indexOf(this.settings.quality) + 1) % order.length];
+      this.settings.autoLow = false;   // AUTO measures again
+      this.slowFrames = 0;
+      this._saveSettings();
+      this.onQuality?.();
+    }
+
+    /**
+     * main.js reports every real frame time. In AUTO, if the phone cannot keep up while playing,
+     * switch to the light graphics (and remember it, so the next game starts smooth).
+     */
+    reportFrame(dt) {
+      if (this.settings.quality !== 'auto' || this.settings.autoLow || this.state !== 'playing') return;
+      this.frameAvg = this.frameAvg ? this.frameAvg * 0.95 + dt * 0.05 : dt;
+      this.slowFrames = (this.slowFrames || 0) + 1;
+      if (this.slowFrames > 150 && this.frameAvg > 0.026) {   // under ~38 frames per second
+        this.settings.autoLow = true;
+        this._saveSettings();
+        this.onQuality?.();
+        this.showToast('Smooth mode ON (lighter graphics)', 2.6);
+      }
+    }
+
+    /** SETTINGS box: change a volume (key 'sfx' or 'music') by `delta` steps. */
+    changeVolume(key, delta) {
+      this.settings[key] = Math.max(0, Math.min(5, this.settings[key] + delta));
+      if (key === 'sfx') { this.sfx.setLevel(this.settings.sfx); this.sfx.play('pickup'); }
+      else this.music?.setLevel(this.settings.music);
+      this._saveSettings();
+    }
+
+    /** SETTINGS box: show the first-time tips again. */
+    replayTips() {
+      this.tipsSeen.clear();
+      this._saveTips();
+      this.showToast('Tips will show again', 2.2);
+    }
+
     _loadTips() {
       try {
         const raw = globalThis.localStorage?.getItem('mathStriker.tips.v1');
@@ -5037,6 +5193,7 @@ const __mod_game = (() => {
      */
     handlePointer(x, y, pointerType = 'mouse') {
       if (pointerType === 'touch') this.touchMode = true;
+      if (this.state !== 'playing') y -= CONFIG.yOff;   // boxes and menus are centred on taller phones
       const inRect = (r) => x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
 
       const buttonAt = (list) => list.find(inRect);
@@ -5049,8 +5206,21 @@ const __mod_game = (() => {
             else if (cb?.id === 'ch-close') this.challengeOpen = false;
             return true;
           }
+          if (this.settingsOpen) { // the settings box takes every tap
+            const sb = buttonAt(this.settingsButtons || []);
+            if (sb?.id === 'sfx-') this.changeVolume('sfx', -1);
+            else if (sb?.id === 'sfx+') this.changeVolume('sfx', 1);
+            else if (sb?.id === 'mus-') this.changeVolume('music', -1);
+            else if (sb?.id === 'mus+') this.changeVolume('music', 1);
+            else if (sb?.id === 'mute') this.sfx.toggleMute();
+            else if (sb?.id === 'tips') this.replayTips();
+            else if (sb?.id === 'gfx') this.cycleQuality();
+            else if (!sb || sb.id === 'close') this.settingsOpen = false;
+            return true;
+          }
           if (this.statsOpen) { this.statsOpen = false; return true; }
           const btn = buttonAt(this.menuButtons);
+          if (btn?.id === 'settings') { this.settingsOpen = true; return true; }
           if (btn?.id === 'stats') { this.statsOpen = true; return true; }
           if (btn?.id === 'switch') { this.switchPlayer(); return true; }
           if (btn?.id === 'install') { this.installOpen(); return true; }
@@ -5784,6 +5954,7 @@ const __mod_game = (() => {
     }
 
     burst(x, y, color, n, speed) {
+      if (this.lowGfx) n = Math.ceil(n * 0.45);   // fewer sparks on slow phones
       for (let i = 0; i < n; i++) {
         const a = this.rng() * Math.PI * 2;
         const s = speed * (0.3 + 0.7 * this.rng());
@@ -5844,12 +6015,15 @@ const __mod_game = (() => {
 
       this.drawBackground(ctx);
 
+      ctx.save();
+      ctx.translate(0, CONFIG.yOff);   // menu screens are laid out for 720 and centred on taller phones
       if (this.state === 'menu') drawMenu(ctx, this);
       else if (this.state === 'leaderboard') drawLeaderboard(ctx, this);
       else if (this.state === 'howto') drawHowTo(ctx, this);
       else if (this.state === 'story') drawStory(ctx, this);
       else if (this.state === 'install') drawInstall(ctx, this);
-      else this.drawWorld(ctx);
+      else { ctx.restore(); ctx.save(); this.drawWorld(ctx); }
+      ctx.restore();
       ctx.restore();
 
       // Full-screen overlays are drawn outside the shake transform.
@@ -5863,14 +6037,23 @@ const __mod_game = (() => {
         if (this.slowmo.t > 0 && this.slowmo.scale < 0.6) this.drawSlowmoTint(ctx);
         drawHUD(ctx, this);
         if (this.state === 'playing') drawBanner(ctx, this);
-        if (this.state === 'paused') drawPause(ctx, this);
-        if (this.state === 'tip') drawTip(ctx, this);
-        if (this.state === 'upgrade') drawUpgrade(ctx, this);
-        if (this.state === 'gameover') drawGameOver(ctx, this);
+        if (this.state === 'paused') this._centred(ctx, () => drawPause(ctx, this));
+        if (this.state === 'tip') this._centred(ctx, () => drawTip(ctx, this));
+        if (this.state === 'upgrade') this._centred(ctx, () => drawUpgrade(ctx, this));
+        if (this.state === 'gameover') this._centred(ctx, () => drawGameOver(ctx, this));
       }
-      if (this.state === 'menu' && this.challengeOpen) drawChallengeModal(ctx, this);
-      if (this.state === 'menu' && this.statsOpen) drawStatsModal(ctx, this);
+      if (this.state === 'menu' && this.challengeOpen) this._centred(ctx, () => drawChallengeModal(ctx, this));
+      if (this.state === 'menu' && this.statsOpen) this._centred(ctx, () => drawStatsModal(ctx, this));
+      if (this.state === 'menu' && this.settingsOpen) this._centred(ctx, () => drawSettingsModal(ctx, this));
       if (this.toast && this.toast.t > 0) drawToast(ctx, this.toast);
+    }
+
+    /** Draw a fixed-layout screen (laid out for 720) centred on a taller phone. */
+    _centred(ctx, fn) {
+      ctx.save();
+      ctx.translate(0, CONFIG.yOff);
+      fn();
+      ctx.restore();
     }
 
     drawBackground(ctx) {
@@ -6220,10 +6403,41 @@ const __mod_main = (() => {
   function startGame() {
     const canvas = $('game');
 
-    // Render at the screen's pixel density (capped at 2x) so text stays crisp.
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    canvas.width = CONFIG.width * dpr;
-    canvas.height = CONFIG.height * dpr;
+    // Render at the screen's pixel density so text stays crisp. Phones with big screens get a lighter
+    // resolution (1.5x, or 1x in smooth mode): fewer pixels per frame means a smoother game.
+    let dpr = 1;
+    const ctx2d = canvas.getContext('2d');
+    const realBlur = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, 'shadowBlur');
+    let low = false;
+    // In smooth mode every glow (shadowBlur) is switched off: glow is the slowest thing a canvas draws.
+    if (realBlur?.set) {
+      Object.defineProperty(ctx2d, 'shadowBlur', {
+        configurable: true,
+        get() { return realBlur.get.call(ctx2d); },
+        set(v) { realBlur.set.call(ctx2d, low ? 0 : v); },
+      });
+    }
+    const applyQuality = () => {
+      low = Boolean(window.__game?.lowGfx);
+      dpr = Math.min(window.devicePixelRatio || 1, low ? 1 : 1.5);
+      canvas.width = Math.round(CONFIG.width * dpr);
+      canvas.height = Math.round(CONFIG.height * dpr);
+      if (window.__game) window.__game.dpr = dpr;
+    };
+    applyQuality();
+
+    // Fit the canvas to the window (inside the phone's safe area), keeping the game's aspect ratio.
+    const fit = () => {
+      const main = canvas.parentElement;
+      const cs = getComputedStyle(main);
+      const aw = main.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      const ah = main.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+      const k = Math.min(aw / CONFIG.width, ah / CONFIG.height);
+      if (k > 0) { canvas.style.width = `${CONFIG.width * k}px`; canvas.style.height = `${CONFIG.height * k}px`; }
+    };
+    fit();
+    window.addEventListener('resize', fit);
+    window.addEventListener('orientationchange', fit);
 
     const input = new Input(window);
     const sfx = new Sfx();
@@ -6232,9 +6446,13 @@ const __mod_main = (() => {
     const game = new Game(canvas, input, sfx, {
       dpr, askName, music, profile, tips: true, desktop: !isTouchDevice,
       challenge: readChallenge(),
+      dpr,
       // SWITCH PLAYER button: ask again, and resolve the new profile (or null if cancelled)
       openRegister: () => askRegister(profile, { canCancel: true }),
     });
+    window.__game = game;
+    game.onQuality = applyQuality;
+    applyQuality();
     if (!profile.has) { // first visit: register before anything else
       askRegister(profile).then((res) => game.profileReady(res));
     } else game.profileReady({ ok: true, name: profile.name, existing: true, silent: true });
@@ -6288,6 +6506,7 @@ const __mod_main = (() => {
     function frame(now) {
       const dt = (now - last) / 1000;
       last = now;
+      game.reportFrame(dt);
       game.update(dt);
       game.render();
       requestAnimationFrame(frame);
