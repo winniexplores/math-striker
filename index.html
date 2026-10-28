@@ -28,6 +28,7 @@ html, body {
 
 main {
   height: 100%;
+  height: 100dvh;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   display: flex;
   align-items: center;
@@ -200,8 +201,14 @@ const __mod_config = (() => {
   // Change values here to rebalance the game without touching any logic.
   // =============================================================================
 
-  // The playfield is always 480 wide. On a tall phone it is also taller (up to 1000), so the game
+  // The playfield is always 480 wide. On a tall phone it is also taller (up to 1150), so the game
   // fills the screen instead of leaving empty bands above and below. 720 is the classic size.
+  /** Logical height for a visible area of w x h pixels: as tall as the screen needs (720..1150). */
+  function heightFor(w, h) {
+    if (!(w > 0) || !(h > 0) || w > h) return 720;     // computers and landscape: the classic size
+    return Math.max(720, Math.min(1150, Math.round((480 * h) / w)));
+  }
+
   function pickHeight() {
     try {
       if (typeof window === 'undefined' || !document?.body) return 720;
@@ -211,10 +218,7 @@ const __mod_config = (() => {
       const cs = getComputedStyle(probe);
       const inset = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
       probe.remove();
-      const w = window.innerWidth;
-      const h = window.innerHeight - inset;
-      if (!(w > 0) || w > h) return 720;           // computers and landscape: the classic size
-      return Math.max(720, Math.min(1000, Math.round((480 * h) / w)));
+      return heightFor(window.innerWidth, window.innerHeight - inset);
     } catch { return 720; }
   }
   const HEIGHT = pickHeight();
@@ -370,7 +374,14 @@ const __mod_config = (() => {
       bombs: 2,
     },
   ];
-  return { CONFIG, CHARACTERS };
+
+  /** The visible area changed (Android hides its bars, the phone turns...): resize the playfield. */
+  function setHeight(h) {
+    CONFIG.height = h;
+    CONFIG.yOff = (h - 720) / 2;
+    CONFIG.touch.bomb.y = 646 + (h - 720);
+  }
+  return { heightFor, CONFIG, CHARACTERS, setHeight };
 })();
 
 /* ======================= FILE: rng.js ======================= */
@@ -1255,7 +1266,6 @@ const __mod_entities = (() => {
   const { operandEffect } = __mod_mathRules;
 
   const W = CONFIG.width;
-  const H = CONFIG.height;
   const TAU = Math.PI * 2;
 
   const MINUS = '−';
@@ -1301,7 +1311,7 @@ const __mod_entities = (() => {
     update(dt) {
       this.x += this.vx * dt;
       this.y += this.vy * dt;
-      if (this.x < -40 || this.x > W + 40 || this.y < -40 || this.y > H + 40) this.dead = true;
+      if (this.x < -40 || this.x > W + 40 || this.y < -40 || this.y > CONFIG.height + 40) this.dead = true;
     }
 
     draw(ctx) {
@@ -1413,7 +1423,7 @@ const __mod_entities = (() => {
     tickFire(dt) {
       if (!this.shooter) return false;
       this.fireTimer -= dt;
-      if (this.fireTimer <= 0 && this.y > 10 && this.y < H * 0.55) {
+      if (this.fireTimer <= 0 && this.y > 10 && this.y < CONFIG.height * 0.55) {
         this.fireTimer = this.shooter.interval;
         return true;
       }
@@ -1536,7 +1546,7 @@ const __mod_entities = (() => {
     update(dt) {
       this.t += dt;
       this.y += this.vy * dt;
-      if (this.y > H + 40) this.dead = true;
+      if (this.y > CONFIG.height + 40) this.dead = true;
     }
 
     draw(ctx) {
@@ -1598,7 +1608,7 @@ const __mod_entities = (() => {
     update(dt) {
       this.t += dt;
       this.y += this.vy * dt;
-      if (this.y > H + 60) this.dead = true;
+      if (this.y > CONFIG.height + 60) this.dead = true;
     }
 
     /** Does a circle (the ship's core, or a bullet) touch this obstacle? */
@@ -1704,7 +1714,7 @@ const __mod_entities = (() => {
       this.t += dt;
       this.y += this.vy * dt;
       if (this.resolved) this.fade -= dt * 3;
-      if (this.y > H + 80 || this.fade <= 0) this.dead = true;
+      if (this.y > CONFIG.height + 80 || this.fade <= 0) this.dead = true;
     }
 
     touchesCircle(cx, cy, cr) {
@@ -1803,7 +1813,7 @@ const __mod_entities = (() => {
     constructor(character) {
       this.character = character;
       this.x = W / 2;
-      this.y = H - 100;
+      this.y = CONFIG.height - 100;
       this.sizeScale = 1; // shrinks when hit by / ÷ fractions: smaller ship = weaker shots
       this.cooldown = 0;
       this.volley = 0;
@@ -1829,13 +1839,13 @@ const __mod_entities = (() => {
 
       const speed = this.character.speed;
       this.x = clamp(this.x + dx * speed * dt, 22, W - 22);
-      this.y = clamp(this.y + dy * speed * dt, 80, H - 34);
+      this.y = clamp(this.y + dy * speed * dt, 80, CONFIG.height - 34);
 
       // Touch drag: the ship follows the finger's movement (relative, 1.3x).
       const tc = input.touch;
       if (tc && tc.active) {
         this.x = clamp(this.x + tc.dx * CONFIG.touch.dragSensitivity, 22, W - 22);
-        this.y = clamp(this.y + tc.dy * CONFIG.touch.dragSensitivity, 80, H - 34);
+        this.y = clamp(this.y + tc.dy * CONFIG.touch.dragSensitivity, 80, CONFIG.height - 34);
         tc.dx = 0;
         tc.dy = 0;
       }
@@ -3527,7 +3537,6 @@ const __mod_ui = (() => {
   const { tierFor, nextTier, seasonLabel } = __mod_ranked;
 
   const W = CONFIG.width;
-  const H = CONFIG.height;
   const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
   /** A tappable rounded button. Returns its rect so the caller can register it. */
@@ -3681,7 +3690,7 @@ const __mod_ui = (() => {
       ctx.stroke();
       drawSpeaker(ctx, mu.x + mu.w / 2 - 3, mu.y + mu.h / 2, !game.sfx.muted, '#8fb3d9');
     } else {
-      drawText(ctx, `PRIME BOMB [B]  ×${game.bombs}`, 12, H - 16, { size: 13, align: 'left', color: bombColor });
+      drawText(ctx, `PRIME BOMB [B]  ×${game.bombs}`, 12, CONFIG.height - 16, { size: 13, align: 'left', color: bombColor });
     }
 
     // Active power-up timers: a row of chips at the TOP, where a phone never hides them
@@ -3750,7 +3759,7 @@ const __mod_ui = (() => {
     }
 
     if (game.mode === 'ranked') {
-      drawText(ctx, `RANKED  ${seasonLabel(game.season)}`, W / 2, H - 12, { size: 10, color: '#6f86ad' });
+      drawText(ctx, `RANKED  ${seasonLabel(game.season)}`, W / 2, CONFIG.height - 12, { size: 10, color: '#6f86ad' });
     }
   }
 
@@ -3766,32 +3775,32 @@ const __mod_ui = (() => {
 
     if (b.finale) {
       ctx.globalAlpha = a;
-      drawText(ctx, 'FINAL SECTOR', W / 2, H / 2 - 40, { size: 18, color: COLORS.bad, glow: 14 });
-      drawText(ctx, '0', W / 2, H / 2 + 30, { size: 90, color: '#dfe9ff', glow: 26 });
-      drawText(ctx, 'Something is waiting at the center.', W / 2, H / 2 + 90, { size: 14, color: '#b9c9e6', weight: 'normal' });
+      drawText(ctx, 'FINAL SECTOR', W / 2, CONFIG.height / 2 - 40, { size: 18, color: COLORS.bad, glow: 14 });
+      drawText(ctx, '0', W / 2, CONFIG.height / 2 + 30, { size: 90, color: '#dfe9ff', glow: 26 });
+      drawText(ctx, 'Something is waiting at the center.', W / 2, CONFIG.height / 2 + 90, { size: 14, color: '#b9c9e6', weight: 'normal' });
       ctx.globalAlpha = 1;
       return;
     }
     if (b.boss) {
       ctx.globalAlpha = a;
       const flash = Math.floor(b.t * 6) % 2 === 0;
-      drawText(ctx, 'WARNING', W / 2, H / 2 - 20, { size: 18, color: flash ? COLORS.bad : '#ffffff', glow: 14 });
-      drawText(ctx, b.boss.name, W / 2, H / 2 + 20, { size: 32, color: `hsl(${b.boss.hue},95%,68%)`, glow: 20 });
-      drawText(ctx, b.boss.intro || 'Shoot its number down to 0', W / 2, H / 2 + 54, { size: 13, color: '#b9c9e6', weight: 'normal' });
-      if (b.boss.taunt) drawText(ctx, `"${b.boss.taunt}"`, W / 2, H / 2 + 84, { size: 14, color: `hsl(${b.boss.hue},90%,78%)` });
+      drawText(ctx, 'WARNING', W / 2, CONFIG.height / 2 - 20, { size: 18, color: flash ? COLORS.bad : '#ffffff', glow: 14 });
+      drawText(ctx, b.boss.name, W / 2, CONFIG.height / 2 + 20, { size: 32, color: `hsl(${b.boss.hue},95%,68%)`, glow: 20 });
+      drawText(ctx, b.boss.intro || 'Shoot its number down to 0', W / 2, CONFIG.height / 2 + 54, { size: 13, color: '#b9c9e6', weight: 'normal' });
+      if (b.boss.taunt) drawText(ctx, `"${b.boss.taunt}"`, W / 2, CONFIG.height / 2 + 84, { size: 14, color: `hsl(${b.boss.hue},90%,78%)` });
       ctx.globalAlpha = 1;
       return;
     }
 
     ctx.globalAlpha = a;
-    drawText(ctx, `STAGE ${stage.id}${loop > 0 ? `  ·  LOOP ${loop + 1}` : ''}`, W / 2, H / 2 - 80, { size: 16, color: '#9fb6d8' });
-    drawText(ctx, stage.op, W / 2, H / 2 - 20, { size: 90, color: `hsl(${stage.hue},95%,65%)`, glow: 26 });
-    drawText(ctx, stage.name, W / 2, H / 2 + 40, { size: 24, color: '#ffffff', glow: 10 });
+    drawText(ctx, `STAGE ${stage.id}${loop > 0 ? `  ·  LOOP ${loop + 1}` : ''}`, W / 2, CONFIG.height / 2 - 80, { size: 16, color: '#9fb6d8' });
+    drawText(ctx, stage.op, W / 2, CONFIG.height / 2 - 20, { size: 90, color: `hsl(${stage.hue},95%,65%)`, glow: 26 });
+    drawText(ctx, stage.name, W / 2, CONFIG.height / 2 + 40, { size: 24, color: '#ffffff', glow: 10 });
     // the tip can be long: one sentence per line
     const tagLines = stage.tagline.split(/(?<=[.!])\s+/);
-    tagLines.forEach((line, i) => drawText(ctx, line, W / 2, H / 2 + 72 + i * 20, { size: 13, color: '#b9c9e6' }));
-    if (loop > 0 && stage.id === 1) drawText(ctx, LOOP_STORY[loop - 1] || LOOP_STORY_DEFAULT, W / 2, H / 2 + 72 + tagLines.length * 20 + 18, { size: 12, color: COLORS.gold, weight: 'normal' });
-    if (loop === 0 && STORY.sector[stage.id]) drawText(ctx, STORY.sector[stage.id], W / 2, H / 2 + 72 + tagLines.length * 20 + 18, { size: 12, color: COLORS.gold, weight: 'normal' });
+    tagLines.forEach((line, i) => drawText(ctx, line, W / 2, CONFIG.height / 2 + 72 + i * 20, { size: 13, color: '#b9c9e6' }));
+    if (loop > 0 && stage.id === 1) drawText(ctx, LOOP_STORY[loop - 1] || LOOP_STORY_DEFAULT, W / 2, CONFIG.height / 2 + 72 + tagLines.length * 20 + 18, { size: 12, color: COLORS.gold, weight: 'normal' });
+    if (loop === 0 && STORY.sector[stage.id]) drawText(ctx, STORY.sector[stage.id], W / 2, CONFIG.height / 2 + 72 + tagLines.length * 20 + 18, { size: 12, color: COLORS.gold, weight: 'normal' });
     ctx.globalAlpha = 1;
   }
 
@@ -4071,7 +4080,7 @@ const __mod_ui = (() => {
     const c = game.challenge;
     if (!c) return;
     ctx.fillStyle = 'rgba(2,6,16,0.78)';
-    ctx.fillRect(0, -CONFIG.yOff, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, CONFIG.height);
     const x = 30, y = 220, w = W - 60, h = 250;
     ctx.fillStyle = '#07142a';
     ctx.strokeStyle = COLORS.gold;
@@ -4096,7 +4105,7 @@ const __mod_ui = (() => {
     if (!st) return;
     const p = st.pages[st.i];
     ctx.fillStyle = 'rgba(2,6,16,0.9)';
-    ctx.fillRect(0, -CONFIG.yOff, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, CONFIG.height);
 
     if (p.ships) {
       drawShip(ctx, CHARACTERS[0], W / 2 - 80, 160, 1.5, game.time, 0);
@@ -4134,7 +4143,7 @@ const __mod_ui = (() => {
     const t = game.tip;
     if (!t) return;
     ctx.fillStyle = 'rgba(2,6,16,0.72)';
-    ctx.fillRect(0, -CONFIG.yOff, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, CONFIG.height);
     // wrap the text to about 31 characters per line
     const words = t.text.split(' ');
     const lines = [];
@@ -4180,7 +4189,7 @@ const __mod_ui = (() => {
   // -----------------------------------------------------------------------------
   function drawPause(ctx, game) {
     ctx.fillStyle = 'rgba(2,6,16,0.8)';
-    ctx.fillRect(0, -CONFIG.yOff, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, CONFIG.height);
     drawText(ctx, 'PAUSED', W / 2, 200, { size: 42, color: '#ffffff', glow: 16 });
     const bx = W / 2 - 120;
     game.pauseButtons = [
@@ -4194,7 +4203,7 @@ const __mod_ui = (() => {
   /** "Pick 1 of 3" upgrade cards after a boss. */
   function drawUpgrade(ctx, game) {
     ctx.fillStyle = 'rgba(2,6,16,0.82)';
-    ctx.fillRect(0, -CONFIG.yOff, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, CONFIG.height);
     drawText(ctx, 'BOSS DEFEATED', W / 2, 92, { size: 30, color: COLORS.gold, glow: 16 });
     drawText(ctx, 'CHOOSE 1 UPGRADE', W / 2, 128, { size: 15, color: '#cfe0ff' });
 
@@ -4233,7 +4242,7 @@ const __mod_ui = (() => {
 
   function drawGameOver(ctx, game) {
     ctx.fillStyle = 'rgba(2,6,16,0.84)';
-    ctx.fillRect(0, -CONFIG.yOff, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, CONFIG.height);
     const ranked = game.mode === 'ranked';
 
     if (game.deathReason === 'lives') {
@@ -4414,7 +4423,7 @@ const __mod_ui = (() => {
     const st = game.stats;
     const d = st.data;
     ctx.fillStyle = 'rgba(2,6,16,0.82)';
-    ctx.fillRect(0, -CONFIG.yOff, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, CONFIG.height);
     const x = 24, y = 130, w = W - 48, h = 440;
     ctx.fillStyle = '#07142a';
     ctx.strokeStyle = '#5dffb0';
@@ -4450,7 +4459,7 @@ const __mod_ui = (() => {
   // SETTINGS box (menu): sound and music volume, mute, replay tips.
   function drawSettingsModal(ctx, game) {
     ctx.fillStyle = 'rgba(2,6,16,0.82)';
-    ctx.fillRect(0, -CONFIG.yOff, W, H);
+    ctx.fillRect(0, -CONFIG.yOff, W, CONFIG.height);
     const x = 24, y = 150, w = W - 48, h = 410;
     ctx.fillStyle = '#07142a';
     ctx.strokeStyle = COLORS.cyan;
@@ -4523,7 +4532,6 @@ const __mod_game = (() => {
   const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, drawInstall, drawChallengeModal, drawStatsModal, drawSettingsModal, drawToast, drawTip, drawStory, HOW_PAGE_COUNT } = __mod_ui;
 
   const W = CONFIG.width;
-  const H = CONFIG.height;
 
   /** Circle-vs-circle overlap test used for every collision in the game. */
   function hits(ax, ay, ar, bx, by, br) {
@@ -4774,8 +4782,8 @@ const __mod_game = (() => {
       const bonus = CONFIG.stageClearBonus * (cleared + 1);
       this.rules.addScore(bonus);
       this.bombs = Math.min(CONFIG.maxBombs, this.bombs + 1);
-      this.addText(W / 2, H / 2 - 40, `STAGE CLEAR  +${bonus}`, COLORS.gold, 24);
-      this.addText(W / 2, H / 2 - 12, '+1 PRIME BOMB', COLORS.violet, 16);
+      this.addText(W / 2, CONFIG.height / 2 - 40, `STAGE CLEAR  +${bonus}`, COLORS.gold, 24);
+      this.addText(W / 2, CONFIG.height / 2 - 12, '+1 PRIME BOMB', COLORS.violet, 16);
 
       this.bullets = this.bullets.filter((b) => b.owner === 'player'); // wipe hostile fire
       let ending = false;
@@ -4930,6 +4938,11 @@ const __mod_game = (() => {
 
     _saveSettings() {
       try { globalThis.localStorage?.setItem('mathStriker.settings.v1', JSON.stringify(this.settings)); } catch { /* private mode */ }
+    }
+
+    /** The playfield changed height (the phone's bars moved): keep the ship and any boxes on screen. */
+    onResize() {
+      if (this.player) this.player.y = Math.min(this.player.y, CONFIG.height - 34);
     }
 
     /** True when the game should draw the light way (no glow, fewer sparks, lower resolution). */
@@ -5556,7 +5569,7 @@ const __mod_game = (() => {
       }
       if (this.bombRing) {
         this.bombRing.r += 1500 * dt;
-        if (this.bombRing.r > H * 1.2) this.bombRing = null;
+        if (this.bombRing.r > CONFIG.height * 1.2) this.bombRing = null;
       }
     }
 
@@ -5776,7 +5789,7 @@ const __mod_game = (() => {
       if (before > 0 && now >= before * CONFIG.bigGainFactor && now - before >= 20) {
         const f = now / before;
         this.flash = { color: 'rgba(255,215,94,0.5)', t: 0.4 };
-        this.addText(W / 2, H / 2 - 20, `×${f >= 10 ? Math.round(f) : f.toFixed(1).replace(/\.0$/, '')}!`, COLORS.gold, 60);
+        this.addText(W / 2, CONFIG.height / 2 - 20, `×${f >= 10 ? Math.round(f) : f.toFixed(1).replace(/\.0$/, '')}!`, COLORS.gold, 60);
         this.explode(this.player.x, this.player.y, COLORS.gold, 2.5);
         this.multPulse = 1.2;
         this.sfx.play('mult');
@@ -5800,7 +5813,7 @@ const __mod_game = (() => {
       if (this.lives === 1) {
         // LAST LIFE: the world slows down for a moment so you can breathe
         this.triggerSlowmo(CONFIG.slowmo.lastLifeSecs, CONFIG.slowmo.lastLifeScale);
-        this.addText(W / 2, H / 2 + 20, 'LAST LIFE!', COLORS.bad, 34);
+        this.addText(W / 2, CONFIG.height / 2 + 20, 'LAST LIFE!', COLORS.bad, 34);
       }
     }
 
@@ -5938,7 +5951,7 @@ const __mod_game = (() => {
     // ===========================================================================
 
     cleanup() {
-      this.tokens = this.tokens.filter((t) => !t.dead && t.y < H + 60);
+      this.tokens = this.tokens.filter((t) => !t.dead && t.y < CONFIG.height + 60);
       this.bullets = this.bullets.filter((b) => !b.dead);
       this.powerups = this.powerups.filter((u) => !u.dead);
       this.obstacles = this.obstacles.filter((o) => !o.dead);
@@ -5976,7 +5989,7 @@ const __mod_game = (() => {
         this.bestLoop = loop;
         try { globalThis.localStorage?.setItem('mathStriker.bestLoop.v1', String(loop)); } catch { /* private mode */ }
       }
-      this.addText(W / 2, H / 2 + 30, `LOOP ${loop} REACHED  +${bonus}`, COLORS.gold, 24);
+      this.addText(W / 2, CONFIG.height / 2 + 30, `LOOP ${loop} REACHED  +${bonus}`, COLORS.gold, 24);
       this.showToast(badge ? `${badge.name}${record ? '  (NEW BEST!)' : ''}` : `LOOP ${loop}`, 3.4);
     }
 
@@ -5993,7 +6006,7 @@ const __mod_game = (() => {
       return Array.from({ length: 26 }, () => ({
         s: syms[Math.floor(this.rng() * syms.length)],
         x: this.rng() * W,
-        y: this.rng() * H,
+        y: this.rng() * CONFIG.height,
         v: 12 + this.rng() * 30,
         size: 12 + this.rng() * 22,
       }));
@@ -6030,10 +6043,10 @@ const __mod_game = (() => {
       if (this.state !== 'menu' && this.state !== 'leaderboard' && this.state !== 'howto' && this.state !== 'install' && this.state !== 'story') {
         if (this.flash) {
           ctx.fillStyle = this.flash.color;
-          ctx.fillRect(0, 0, W, H);
+          ctx.fillRect(0, 0, W, CONFIG.height);
         }
         this.drawLowScoreVignette(ctx);
-        if (this.state === 'playing' && this.rules.freezeActive) { ctx.fillStyle = 'rgba(140,220,255,0.13)'; ctx.fillRect(0, 0, W, H); }
+        if (this.state === 'playing' && this.rules.freezeActive) { ctx.fillStyle = 'rgba(140,220,255,0.13)'; ctx.fillRect(0, 0, W, CONFIG.height); }
         if (this.slowmo.t > 0 && this.slowmo.scale < 0.6) this.drawSlowmoTint(ctx);
         drawHUD(ctx, this);
         if (this.state === 'playing') drawBanner(ctx, this);
@@ -6058,25 +6071,25 @@ const __mod_game = (() => {
 
     drawBackground(ctx) {
       const hue = this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' || this.state === 'install' || this.state === 'story' ? 215 : this.stage.hue;
-      const g = ctx.createLinearGradient(0, 0, 0, H);
+      const g = ctx.createLinearGradient(0, 0, 0, CONFIG.height);
       g.addColorStop(0, `hsl(${hue}, 55%, 9%)`);
       g.addColorStop(1, `hsl(${hue + 20}, 60%, 4%)`);
       ctx.fillStyle = g;
-      ctx.fillRect(0, 0, W, H);
+      ctx.fillRect(0, 0, W, CONFIG.height);
 
       // Scrolling "quantum grid"
       ctx.strokeStyle = `hsla(${hue}, 80%, 60%, 0.10)`;
       ctx.lineWidth = 1;
       ctx.beginPath();
-      for (let x = 0; x <= W; x += 40) { ctx.moveTo(x, 0); ctx.lineTo(x, H); }
+      for (let x = 0; x <= W; x += 40) { ctx.moveTo(x, 0); ctx.lineTo(x, CONFIG.height); }
       const off = (this.time * 40) % 40;
-      for (let y = -40 + off; y <= H; y += 40) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+      for (let y = -40 + off; y <= CONFIG.height; y += 40) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
       ctx.stroke();
 
       // Drifting math glyphs give parallax depth
       for (const gl of this.bgGlyphs) {
         gl.y += gl.v * 0.016;
-        if (gl.y > H + 30) { gl.y = -30; gl.x = this.rng() * W; }
+        if (gl.y > CONFIG.height + 30) { gl.y = -30; gl.x = this.rng() * W; }
         ctx.globalAlpha = 0.07 + gl.v / 600;
         drawText(ctx, gl.s, gl.x, gl.y, { size: gl.size, color: `hsl(${hue}, 80%, 70%)` });
       }
@@ -6099,8 +6112,8 @@ const __mod_game = (() => {
           ctx.fillRect(0, z.y - z.h / 2, W, z.h);
           ctx.strokeRect(0, z.y - z.h / 2, W, z.h);
         } else if (z.kind === 'column') {
-          ctx.fillRect(z.x - z.w / 2, 0, z.w, H);
-          ctx.strokeRect(z.x - z.w / 2, 0, z.w, H);
+          ctx.fillRect(z.x - z.w / 2, 0, z.w, CONFIG.height);
+          ctx.strokeRect(z.x - z.w / 2, 0, z.w, CONFIG.height);
         } else {
           ctx.beginPath();
           ctx.arc(z.x, z.y, warn ? z.r : z.r * 1.15, 0, Math.PI * 2);
@@ -6210,21 +6223,21 @@ const __mod_game = (() => {
 
     /** Slow-motion look: a cool blue edge glow. */
     drawSlowmoTint(ctx) {
-      const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.3, W / 2, H / 2, H * 0.75);
+      const g = ctx.createRadialGradient(W / 2, CONFIG.height / 2, CONFIG.height * 0.3, W / 2, CONFIG.height / 2, CONFIG.height * 0.75);
       g.addColorStop(0, 'rgba(80,140,255,0)');
       g.addColorStop(1, 'rgba(80,140,255,0.28)');
       ctx.fillStyle = g;
-      ctx.fillRect(0, 0, W, H);
+      ctx.fillRect(0, 0, W, CONFIG.height);
     }
 
     drawLowScoreVignette(ctx) {
       if (this.state !== 'playing' || this.rules.score >= CONFIG.lowScoreWarning) return;
       const a = 0.18 + 0.12 * Math.sin(this.time * 9);
-      const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, H * 0.7);
+      const g = ctx.createRadialGradient(W / 2, CONFIG.height / 2, CONFIG.height * 0.25, W / 2, CONFIG.height / 2, CONFIG.height * 0.7);
       g.addColorStop(0, 'rgba(255,0,40,0)');
       g.addColorStop(1, `rgba(255,0,40,${a})`);
       ctx.fillStyle = g;
-      ctx.fillRect(0, 0, W, H);
+      ctx.fillRect(0, 0, W, CONFIG.height);
     }
   }
   return { Game };
@@ -6242,7 +6255,7 @@ const __mod_main = (() => {
   //               add ?inapp=1 to preview the "open in your browser" prompt.
   // =============================================================================
 
-  const { CONFIG } = __mod_config;
+  const { CONFIG, heightFor, setHeight } = __mod_config;
   const { Input } = __mod_input;
   const { Sfx, Music } = __mod_audio;
   const { Game } = __mod_game;
@@ -6426,18 +6439,32 @@ const __mod_main = (() => {
     };
     applyQuality();
 
-    // Fit the canvas to the window (inside the phone's safe area), keeping the game's aspect ratio.
+    // Fit the canvas to the visible area (inside the phone's safe area). If that area changed shape
+    // (Android hides its bars when the game goes fullscreen), make the playfield taller or shorter
+    // to match, so there are never empty bands above or below.
     const fit = () => {
       const main = canvas.parentElement;
       const cs = getComputedStyle(main);
       const aw = main.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
       const ah = main.clientHeight - (parseFloat(cs.paddingTop) || 0) - (parseFloat(cs.paddingBottom) || 0);
+      if (!(aw > 0 && ah > 0)) return;
+      const h = heightFor(aw, ah);
+      if (Math.abs(h - CONFIG.height) >= 4) {
+        setHeight(h);
+        applyQuality();
+        window.__game?.onResize?.();
+      }
       const k = Math.min(aw / CONFIG.width, ah / CONFIG.height);
-      if (k > 0) { canvas.style.width = `${CONFIG.width * k}px`; canvas.style.height = `${CONFIG.height * k}px`; }
+      canvas.style.width = `${CONFIG.width * k}px`;
+      canvas.style.height = `${CONFIG.height * k}px`;
     };
     fit();
-    window.addEventListener('resize', fit);
-    window.addEventListener('orientationchange', fit);
+    let fitTimer = 0;
+    const fitSoon = () => { fit(); clearTimeout(fitTimer); fitTimer = setTimeout(fit, 250); }; // and once more when the browser has settled
+    window.addEventListener('resize', fitSoon);
+    window.visualViewport?.addEventListener('resize', fitSoon);
+    document.addEventListener('fullscreenchange', fitSoon);
+    window.addEventListener('orientationchange', fitSoon);
 
     const input = new Input(window);
     const sfx = new Sfx();
