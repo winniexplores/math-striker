@@ -2832,6 +2832,7 @@ const __mod_boss = (() => {
       phase2: [{ type: 'ring', every: 5.0, n: 8 }],
       clones: { at: 0.6, n: 2, hp: 7 },
       intro: 'It splits in two! Shoot the CLONES first.',
+      taunt: 'Everything adds up to nothing.', restored: 'SUM RESTORED. Thank you, Solvers.',
     },
     {
       // Gimmick: a turning SHIELD (shots hitting it are blocked), a warned LASER band, and a SLAM at the end.
@@ -2841,6 +2842,7 @@ const __mod_boss = (() => {
       shield: { half: 0.95 },
       moves: [{ type: 'slam', from: 3, every: 10, first: 3 }],
       intro: 'A turning SHIELD blocks shots. Dodge the red line and the slam!',
+      taunt: 'Subtract everything. Leave nothing.', restored: 'DIFFERENCE RESTORED. I remember.',
     },
     {
       // Gimmick: summons tough zeros, and BOUNCES around the screen from phase 2.
@@ -2849,6 +2851,7 @@ const __mod_boss = (() => {
       phase2: [{ type: 'ring', every: 5.0, n: 8 }],
       moves: [{ type: 'bounce', from: 2, every: 13, first: 7, dur: 4.5 }],
       intro: 'It BOUNCES! Zeros are deadly. Keep moving.',
+      taunt: 'Zero times anything is zero.', restored: 'PRODUCT RESTORED. The Core breathes.',
     },
     {
       // Gimmick: TELEPORTS and drops sudden "÷" blasts where you stand: leave the red circle!
@@ -2858,8 +2861,24 @@ const __mod_boss = (() => {
       phase2: [{ type: 'ring', every: 5.0, n: 8 }, { type: 'fall', every: 6.5, n: 2 }],
       moves: [{ type: 'teleport', from: 1, every: 6, first: 4 }, { type: 'teleport', from: 2, every: 3.5, first: 2 }],
       intro: 'It TELEPORTS and drops blasts. Leave the red circles!',
+      taunt: 'Divide it all, until only zero remains.', restored: 'QUOTIENT RESTORED. One enemy is left.',
     },
   ];
+
+  /**
+   * The final boss (appears once, after the fourth Operator). It has the gimmicks of all four:
+   * clones, a turning shield, teleports, slams, bounces and warned blasts, but fewer plain bullets.
+   */
+  const ZERO_BOSS = {
+    name: 'THE ZERO', glyph: '0', hue: 215, color: '#dfe9ff', hp: 260, value: 6, reward: 500, sides: 24, final: true,
+    attacks: [{ type: 'fan', every: 2.1, n: 3, spread: 0.3 }, { type: 'rain', every: 5.0, n: 3 }, { type: 'fall', every: 4.2, n: 3 }],
+    phase2: [{ type: 'laser', every: 6.5 }, { type: 'ring', every: 5.5, n: 8 }],
+    shield: { half: 0.8 },
+    clones: { at: 0.5, n: 2, hp: 9 },
+    moves: [{ type: 'teleport', from: 1, every: 7, first: 5 }, { type: 'slam', from: 2, every: 10, first: 4 }, { type: 'bounce', from: 3, every: 12, first: 6, dur: 4 }],
+    intro: 'Everything it touches becomes nothing.',
+    taunt: 'I am the number that ends all numbers.', restored: 'THE ZERO IS DEFEATED.',
+  };
 
   class Boss {
     /**
@@ -3118,7 +3137,7 @@ const __mod_boss = (() => {
     draw(ctx) {
       const d = this.def;
       const hue = d.hue;
-      const col = this.flash > 0 ? '#ffffff' : `hsl(${hue},95%,62%)`;
+      const col = this.flash > 0 ? '#ffffff' : (d.color || `hsl(${hue},95%,62%)`);
       const sides = d.sides || 6;
       const mv = this.move;
       const warning = mv && ((mv.type === 'bounce' && mv.t < mv.warn) || (mv.type === 'slam' && mv.t < 1.35));
@@ -3205,7 +3224,7 @@ const __mod_boss = (() => {
       }
     }
   }
-  return { BOSSES, Boss };
+  return { BOSSES, ZERO_BOSS, Boss };
 })();
 
 /* ======================= FILE: inapp.js ======================= */
@@ -3263,6 +3282,86 @@ const __mod_inapp = (() => {
   return { detectInAppBrowser, detectPlatform, chromeIntentUrl, inAppHelp };
 })();
 
+/* ======================= FILE: story.js ======================= */
+const __mod_story = (() => {
+  // =============================================================================
+  // story.js  -  every line of the story, in one place (easy to edit).
+  // A page is { glyph, title, lines: [...], color }. Lines are short on purpose: they are drawn
+  // as separate rows on a phone screen. (Max ~32 characters per line.)
+  // =============================================================================
+
+  const STORY = {
+    intro: [
+      {
+        glyph: 'Σ', title: 'THE QUANTUM CORE', color: '#4dd2ff',
+        lines: ['The Core runs every number', 'in the world.', '', 'Every calculation.', 'Every answer.', 'It has never made a mistake.'],
+      },
+      {
+        glyph: '0', title: 'THE ZERO', color: '#e8f1ff',
+        lines: ['Until a corruption woke up.', '', 'It has one purpose:', 'turn every number into nothing.', '', 'It calls itself THE ZERO.'],
+      },
+      {
+        glyph: '÷', title: 'THE FOUR OPERATORS', color: '#ff6b9a',
+        lines: ['It broke the four Operators', 'that hold math together:', '', 'SUM   DIFFERENCE', 'PRODUCT   QUOTIENT', '', 'Now they attack everything', 'that still counts.'],
+      },
+      {
+        glyph: '▲', title: 'THE SOLVERS', color: '#ffd75e', ships: true,
+        lines: ['Two Solvers were sent in.', '', 'AXIOM holds the line.', 'CALCULA never slows down.', '', 'Your score is your life force.', 'Do not let it reach zero.'],
+      },
+    ],
+
+    // shown at the start of each sector (first loop only)
+    sector: {
+      1: 'The Core is losing numbers. Gather what is left.',
+      2: 'The corruption spreads. Remove what does not belong.',
+      3: 'Everything it touches multiplies. Grow faster than it shrinks you.',
+      4: 'The last Operator. Break the corruption into pieces.',
+    },
+
+    ending: [
+      {
+        glyph: '0', title: 'THE ZERO IS GONE', color: '#e8f1ff',
+        lines: ['Where it fell, the Core', 'starts counting again.', '', 'One.   Two.   Three.'],
+      },
+      {
+        glyph: 'Σ', title: 'THE CORE IS SAFE', color: '#4dd2ff',
+        lines: ['The four Operators return', 'to their posts.', '', 'Every number in the world', 'is safe again.'],
+      },
+      {
+        glyph: '∞', title: 'THE ZERO\'S ECHO', color: '#ff6b9a',
+        lines: ['But something remains:', 'an echo of THE ZERO,', 'still counting down.', '', 'The sectors begin again,', 'faster than before.', 'How far can you go?'],
+      },
+    ],
+  };
+
+  // One line when a new loop (a new run through the four sectors) begins
+  const LOOP_STORY = [
+    'The Echo remembers every mistake. Do not repeat them.',
+    'The Core is rewriting itself around you.',
+    'Even the Operators are afraid now.',
+    'No Solver has gone this far.',
+  ];
+  const LOOP_STORY_DEFAULT = 'Still counting. Still standing.';
+
+  /** Badge for reaching a loop (the loop number counts from 1; loop 2 is the first Echo loop). */
+  const LOOP_BADGES = [
+    { loop: 2, name: 'ECHO RUNNER' },
+    { loop: 3, name: 'ECHO HUNTER' },
+    { loop: 4, name: 'ECHO MASTER' },
+    { loop: 5, name: 'ECHO LEGEND' },
+  ];
+
+  function badgeFor(loop) {
+    let best = null;
+    for (const b of LOOP_BADGES) if (loop >= b.loop) best = b;
+    return best;
+  }
+
+  /** Bonus score for reaching loop `loop` (loop 2 = 200, loop 3 = 300 ...). */
+  function loopBonus(loop) { return 100 * loop; }
+  return { STORY, LOOP_STORY, LOOP_STORY_DEFAULT, LOOP_BADGES, badgeFor, loopBonus };
+})();
+
 /* ======================= FILE: ui.js ======================= */
 const __mod_ui = (() => {
   // =============================================================================
@@ -3272,6 +3371,7 @@ const __mod_ui = (() => {
 
   const { CONFIG, CHARACTERS } = __mod_config;
   const { STAGES } = __mod_stages;
+  const { STORY, LOOP_STORY, LOOP_STORY_DEFAULT, badgeFor } = __mod_story;
   const { shipArt } = __mod_art;
   const { drawText, drawShip, drawHeart, pathRoundRect } = __mod_draw;
   const { POWERUP_INFO, COLORS } = __mod_entities;
@@ -3498,12 +3598,21 @@ const __mod_ui = (() => {
     const a = clamp(Math.min(b.t / 0.3, (b.dur - b.t) / 0.5), 0, 1);
     const loop = Math.floor(game.stageIndex / STAGES.length);
 
+    if (b.finale) {
+      ctx.globalAlpha = a;
+      drawText(ctx, 'FINAL SECTOR', W / 2, H / 2 - 40, { size: 18, color: COLORS.bad, glow: 14 });
+      drawText(ctx, '0', W / 2, H / 2 + 30, { size: 90, color: '#dfe9ff', glow: 26 });
+      drawText(ctx, 'Something is waiting at the center.', W / 2, H / 2 + 90, { size: 14, color: '#b9c9e6', weight: 'normal' });
+      ctx.globalAlpha = 1;
+      return;
+    }
     if (b.boss) {
       ctx.globalAlpha = a;
       const flash = Math.floor(b.t * 6) % 2 === 0;
       drawText(ctx, 'WARNING', W / 2, H / 2 - 20, { size: 18, color: flash ? COLORS.bad : '#ffffff', glow: 14 });
       drawText(ctx, b.boss.name, W / 2, H / 2 + 20, { size: 32, color: `hsl(${b.boss.hue},95%,68%)`, glow: 20 });
       drawText(ctx, b.boss.intro || 'Shoot its number down to 0', W / 2, H / 2 + 54, { size: 13, color: '#b9c9e6', weight: 'normal' });
+      if (b.boss.taunt) drawText(ctx, `"${b.boss.taunt}"`, W / 2, H / 2 + 84, { size: 14, color: `hsl(${b.boss.hue},90%,78%)` });
       ctx.globalAlpha = 1;
       return;
     }
@@ -3513,7 +3622,10 @@ const __mod_ui = (() => {
     drawText(ctx, stage.op, W / 2, H / 2 - 20, { size: 90, color: `hsl(${stage.hue},95%,65%)`, glow: 26 });
     drawText(ctx, stage.name, W / 2, H / 2 + 40, { size: 24, color: '#ffffff', glow: 10 });
     // the tip can be long: one sentence per line
-    stage.tagline.split(/(?<=[.!])\s+/).forEach((line, i) => drawText(ctx, line, W / 2, H / 2 + 72 + i * 20, { size: 13, color: '#b9c9e6' }));
+    const tagLines = stage.tagline.split(/(?<=[.!])\s+/);
+    tagLines.forEach((line, i) => drawText(ctx, line, W / 2, H / 2 + 72 + i * 20, { size: 13, color: '#b9c9e6' }));
+    if (loop > 0 && stage.id === 1) drawText(ctx, LOOP_STORY[loop - 1] || LOOP_STORY_DEFAULT, W / 2, H / 2 + 72 + tagLines.length * 20 + 18, { size: 12, color: COLORS.gold, weight: 'normal' });
+    if (loop === 0 && STORY.sector[stage.id]) drawText(ctx, STORY.sector[stage.id], W / 2, H / 2 + 72 + tagLines.length * 20 + 18, { size: 12, color: COLORS.gold, weight: 'normal' });
     ctx.globalAlpha = 1;
   }
 
@@ -3557,7 +3669,8 @@ const __mod_ui = (() => {
       drawText(ctx, 'Relaxed endless run  ·  classic boards', W / 2, 206, { size: 12, color: '#9fb6d8', weight: 'normal' });
     } else {
       drawText(ctx, `Season ${seasonLabel(game.rankedBoard.season)}  ·  same enemies for everyone  ·  tiers`, W / 2, 206, { size: 11, color: COLORS.gold, weight: 'normal' });
-      drawText(ctx, `Your best: ${tierFor(game.rankedBoard.best(game.leaderboard.lastName)).name}`, W / 2, 224, { size: 12, color: '#9fb6d8', weight: 'normal' });
+      const bd = badgeFor(game.bestLoop);
+      drawText(ctx, `Your best: ${tierFor(game.rankedBoard.best(game.leaderboard.lastName)).name}${bd ? `  ·  ${bd.name} (LOOP ${game.bestLoop})` : ''}`, W / 2, 224, { size: 12, color: '#9fb6d8', weight: 'normal' });
     }
 
     game.cardRects = [];
@@ -3607,6 +3720,7 @@ const __mod_ui = (() => {
     game.menuButtons.push({ id: 'start', ...drawButton(ctx, { x: W / 2 - 200, y: 540, w: 400, h: 40 }, `START  ·  ${pick.name}`, pick.color) });
     ctx.globalAlpha = 1;
 
+    game.menuButtons.push({ id: 'story', ...drawButton(ctx, { x: 10, y: 46, w: 74, h: 26 }, 'STORY', '#9fc2ff') });
     game.menuButtons.push({ id: 'howto', ...drawButton(ctx, { x: W / 2 - 200, y: 586, w: 195, h: 34 }, 'HOW TO PLAY', COLORS.good) });
     game.menuButtons.push({ id: 'board', ...drawButton(ctx, { x: W / 2 + 5, y: 586, w: 195, h: 34 }, 'LEADERBOARD', COLORS.gold) });
 
@@ -3788,6 +3902,45 @@ const __mod_ui = (() => {
       { id: 'ch-accept', ...drawButton(ctx, { x: x + 20, y: y + 178, w: w - 100, h: 50 }, 'ACCEPT AND PLAY', COLORS.good) },
       { id: 'ch-close', ...drawButton(ctx, { x: x + w - 70, y: y + 178, w: 50, h: 50 }, 'X', '#8fb3d9') },
     ];
+  }
+
+  // Story pages: typed out, tap to continue
+  function drawStory(ctx, game) {
+    const st = game.story;
+    if (!st) return;
+    const p = st.pages[st.i];
+    ctx.fillStyle = 'rgba(2,6,16,0.9)';
+    ctx.fillRect(0, 0, W, H);
+
+    if (p.ships) {
+      drawShip(ctx, CHARACTERS[0], W / 2 - 80, 160, 1.5, game.time, 0);
+      drawShip(ctx, CHARACTERS[1], W / 2 + 80, 160, 1.5, game.time, 0);
+    } else {
+      ctx.globalAlpha = 0.9;
+      drawText(ctx, p.glyph, W / 2, 160, { size: 120, color: p.color, glow: 26 });
+      ctx.globalAlpha = 1;
+    }
+    drawText(ctx, p.title, W / 2, 270, { size: 26, color: p.color, glow: 12 });
+
+    // typewriter: reveal characters over time
+    let left = Math.floor(st.t * 60);
+    p.lines.forEach((line, i) => {
+      const shown = line.slice(0, Math.max(0, left));
+      left -= line.length;
+      if (shown) drawText(ctx, shown, W / 2, 322 + i * 27, { size: 16, color: '#dfe9ff', weight: 'normal' });
+    });
+
+    // page dots
+    st.pages.forEach((_, i) => {
+      ctx.fillStyle = i === st.i ? p.color : 'rgba(255,255,255,0.25)';
+      ctx.beginPath(); ctx.arc(W / 2 + (i - (st.pages.length - 1) / 2) * 18, 600, 4, 0, Math.PI * 2); ctx.fill();
+    });
+    const done = st.t * 60 >= p.lines.join('').length;
+    ctx.globalAlpha = done ? 0.55 + 0.45 * Math.sin(game.time * 5) : 0.3;
+    drawText(ctx, st.i >= st.pages.length - 1 ? 'TAP TO FINISH' : 'TAP TO CONTINUE', W / 2, 640, { size: 14, color: '#ffffff', glow: 6 });
+    ctx.globalAlpha = 1;
+
+    game.storyButtons = [{ id: 'story-skip', ...drawButton(ctx, { x: W - 96, y: 40, w: 80, h: 34 }, 'SKIP', '#8fb3d9') }];
   }
 
   // First-time tip: the game is paused behind it
@@ -4061,7 +4214,7 @@ const __mod_ui = (() => {
       game.lbButtons.push({ id: 'back', ...drawButton(ctx, { x: W / 2 - 100, y: 606, w: 200, h: 48 }, 'BACK', '#ffffff') });
     }
   }
-  return { drawHUD, drawBanner, drawMenu, HOW_PAGE_COUNT, drawHowTo, drawInstall, drawChallengeModal, drawTip, drawToast, drawPause, drawUpgrade, drawGameOver, drawLeaderboard };
+  return { drawHUD, drawBanner, drawMenu, HOW_PAGE_COUNT, drawHowTo, drawInstall, drawChallengeModal, drawStory, drawTip, drawToast, drawPause, drawUpgrade, drawGameOver, drawLeaderboard };
 })();
 
 /* ======================= FILE: game.js ======================= */
@@ -4089,7 +4242,8 @@ const __mod_game = (() => {
   const { MathRules, isPrime } = __mod_mathRules;
   const { Spawner } = __mod_spawner;
   const { Player, Bullet, Token, PowerUp, Particle, FloatingText, Ring, COLORS, POWERUP_INFO } = __mod_entities;
-  const { Boss, BOSSES } = __mod_boss;
+  const { Boss, BOSSES, ZERO_BOSS } = __mod_boss;
+  const { STORY, badgeFor, loopBonus } = __mod_story;
   const { Combo } = __mod_combo;
   const { pickCards, applyUpgrade } = __mod_upgrades;
   const { RankedBoard, seasonSeed } = __mod_ranked;
@@ -4097,7 +4251,7 @@ const __mod_game = (() => {
   const { detectPlatform } = __mod_inapp;
   const { drawText } = __mod_draw;
   const { Leaderboard, cleanName } = __mod_leaderboard;
-  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, drawInstall, drawChallengeModal, drawToast, drawTip, HOW_PAGE_COUNT } = __mod_ui;
+  const { drawHUD, drawMenu, drawBanner, drawPause, drawGameOver, drawLeaderboard, drawUpgrade, drawHowTo, drawInstall, drawChallengeModal, drawToast, drawTip, drawStory, HOW_PAGE_COUNT } = __mod_ui;
 
   const W = CONFIG.width;
   const H = CONFIG.height;
@@ -4161,6 +4315,7 @@ const __mod_game = (() => {
       this.cardRects = [];
       this.time = 0;
       this.highScore = this._loadHigh();
+      this.bestLoop = this._loadBestLoop();   // the furthest loop ever reached on this phone
       this.bgGlyphs = this._makeGlyphs();
 
       this.startRun(CHARACTERS[0].id); // initialise all fields, then go back to the menu
@@ -4237,6 +4392,9 @@ const __mod_game = (() => {
       this.lastRow = null;    // the score row just saved (highlighted on the leaderboard)
       this.bombs = character.bombs;
       this.stageIndex = 0;
+      this.finale = false;             // the stage-4 follow-up where THE ZERO appears (once per run)
+      this.zeroDone = false;
+      this.story = null;
       this.stageTime = 0;
       this.runTime = 0;
       this.difficulty = 1;
@@ -4262,14 +4420,14 @@ const __mod_game = (() => {
 
     /** The stage timer ran out: the stage boss arrives. Spawning pauses until it is beaten. */
     startBoss() {
-      const def = BOSSES[this.stageIndex % BOSSES.length];
+      const def = this.finale ? ZERO_BOSS : BOSSES[this.stageIndex % BOSSES.length];
       this.boss = new Boss(def, { difficulty: this.difficulty, stagesCleared: this.stageIndex, rng: this.runRng });
       this.phase = 'boss';
       this.gates.forEach((g) => { g.dead = true; });
       this.bullets = this.bullets.filter((b) => b.owner === 'player');
       // the board is cleaned when a boss arrives: leftover red numbers pop (no reward) so nothing is left over to pile up
       for (const t of this.tokens) if (t.role === 'bad' && !t.dead) { t.dead = true; this.explode(t.x, t.y, COLORS.bad, 0.5); }
-      this.banner = { t: 0, dur: 2.6, boss: def };
+      this.banner = { t: 0, dur: def.final ? 3.4 : 2.9, boss: def };
       this.shake = Math.max(this.shake, 0.4);
       this.sfx.play('boss');
     }
@@ -4286,6 +4444,7 @@ const __mod_game = (() => {
       this.explode(b.x, b.y, `hsl(${b.def.hue},95%,62%)`, 5);
       this.explode(b.x, b.y, '#ffffff', 3);
       this.addText(b.x, b.y - 10, `${b.def.name} DOWN  +${b.def.reward}`, COLORS.gold, 22);
+      if (b.def.restored) this.showToast(b.def.restored, 3.4);
       // everything hostile pops (no kill rewards), enemy bullets vanish
       for (const t of this.tokens) if (t.role === 'bad' && !t.dead) { t.dead = true; this.explode(t.x, t.y, COLORS.bad, 0.7); }
       for (const q of this.bullets) if (q.owner === 'enemy') q.dead = true;
@@ -4340,6 +4499,16 @@ const __mod_game = (() => {
       this.addText(W / 2, H / 2 - 12, '+1 PRIME BOMB', COLORS.violet, 16);
 
       this.bullets = this.bullets.filter((b) => b.owner === 'player'); // wipe hostile fire
+      let ending = false;
+      if (this.finale) { this.finale = false; this.zeroDone = true; ending = true; }
+      else if (cleared === 3 && !this.zeroDone) {
+        // after the fourth Operator: a short run-up, then THE ZERO (first time through only)
+        this.finale = true;
+        this.stageTime = CONFIG.stageDuration - 7;
+        this.banner = { t: 0, dur: 3, finale: true };
+        this.sfx.play('boss');
+        return;
+      }
       this.stageIndex++;
       this.stageTime = 0;
       this.difficulty = 1 + CONFIG.loopDifficultyStep * Math.floor(this.stageIndex / STAGES.length); // endless loops get harder
@@ -4347,6 +4516,8 @@ const __mod_game = (() => {
       this.spawner.onStageStart(this.stageIndex);
       this.banner = { t: 0, dur: 2.8 };
       this.sfx.play('stage');
+      if (this.stageIndex % STAGES.length === 0 && this.stageIndex > 0) this.onNewLoop(this.stageIndex / STAGES.length + 1);
+      if (ending) this.openStory(STORY.ending, () => this._setState('playing'));
     }
 
     /** Slow motion for `secs` real seconds at `scale` speed (0.3 = very slow). */
@@ -4418,6 +4589,11 @@ const __mod_game = (() => {
             else if (this.input.wasPressed('back')) this._setState('menu');
           }
           break;
+        case 'story':
+          this.story.t += dt;
+          if (this.input.wasPressed('confirm')) this.storyNext();
+          else if (this.input.wasPressed('back')) this.finishStory();
+          break;
         case 'howto':
           if (this.input.wasPressed('confirm')) this.howNext();
           else if (this.input.wasPressed('back')) this.closeHowTo();
@@ -4434,7 +4610,7 @@ const __mod_game = (() => {
     _syncMusic() {
       if (!this.music) return;
       let theme = null;
-      if (this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' || this.state === 'install') theme = 'menu';
+      if (this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' || this.state === 'install' || this.state === 'story') theme = 'menu';
       else if (this.state === 'playing' || this.state === 'paused' || this.state === 'upgrade' || this.state === 'tip') {
         theme = this.phase === 'boss' ? 'boss' : `s${this.stageIndex % STAGES.length}`;
       }
@@ -4596,9 +4772,50 @@ const __mod_game = (() => {
     /** Start a run from the menu in the selected mode. */
     beginFromMenu(i) {
       this.menuIndex = i;
-      // First time ever: show HOW TO PLAY before the run starts
+      // First time ever: the story, then HOW TO PLAY, then the run
+      if (!this._storySeen()) {
+        try { globalThis.localStorage?.setItem('mathStriker.story.v1', '1'); } catch { /* private mode */ }
+        this.openStory(STORY.intro, () => { this._setState('menu'); this.stateTime = 1; this.beginFromMenu(i); });
+        return;
+      }
       if (!this._howSeen()) { this.openHowTo(i); return; }
       this.startRun(CHARACTERS[i].id, this.mode);
+    }
+
+    _storySeen() {
+      try {
+        const st = globalThis.localStorage;
+        if (!st) return true; // no storage (tests, private mode): never nag
+        return st.getItem('mathStriker.story.v1') === '1';
+      } catch { return true; }
+    }
+
+    /** Show story pages one by one. `done` runs when the last page is dismissed (or skipped). */
+    openStory(pages, done = null) {
+      this.input.touchEnd(this.input.touch.id);
+      this.story = { pages, i: 0, t: 0, done };
+      this._setState('story');
+    }
+
+    /** Total characters on the current page (the text is typed out). */
+    _storyChars() {
+      const p = this.story.pages[this.story.i];
+      return p.lines.join('').length;
+    }
+
+    storyNext() {
+      const s = this.story;
+      if (!s) return;
+      if (s.t * 60 < this._storyChars()) { s.t = 999; return; } // first tap finishes the typing
+      if (s.i >= s.pages.length - 1) this.finishStory();
+      else { s.i += 1; s.t = 0; this.sfx.play('card'); }
+    }
+
+    finishStory() {
+      const s = this.story;
+      this.story = null;
+      if (s?.done) s.done();
+      else this._setState('menu');
     }
 
     _howSeen() {
@@ -4655,6 +4872,7 @@ const __mod_game = (() => {
           if (btn?.id === 'install') { this.installOpen(); return true; }
           if (btn?.id === 'board') { this.openLeaderboard('menu'); return true; }
           if (btn?.id === 'howto') { this.openHowTo(null); return true; }
+          if (btn?.id === 'story') { this.openStory(STORY.intro, () => { this._setState('menu'); this.stateTime = 1; }); return true; }
           if (btn?.id === 'mode-classic') { this.mode = 'classic'; return true; }
           if (btn?.id === 'mode-ranked') { this.mode = 'ranked'; return true; }
           if (btn?.id === 'mute') { this.sfx.toggleMute(); return true; }
@@ -4698,6 +4916,12 @@ const __mod_game = (() => {
         case 'install': {
           this._setState('menu');
           this.stateTime = 1;
+          return true;
+        }
+        case 'story': {
+          const btn = buttonAt(this.storyButtons || []);
+          if (btn?.id === 'story-skip') this.finishStory();
+          else this.storyNext();
           return true;
         }
         case 'howto': {
@@ -4903,7 +5127,7 @@ const __mod_game = (() => {
           }
         }
       }
-      if (boss.fightTime > CONFIG.bossTimeout) this.bossEscapes();
+      if (!boss.def.final && boss.fightTime > CONFIG.bossTimeout) this.bossEscapes(); // THE ZERO never leaves
     }
 
     updateDying(dt) {
@@ -5376,6 +5600,24 @@ const __mod_game = (() => {
       }
     }
 
+    _loadBestLoop() {
+      try { return Number(globalThis.localStorage?.getItem('mathStriker.bestLoop.v1')) || 1; } catch { return 1; }
+    }
+
+    /** A new loop began (loop 2 = first Echo loop): bonus score, a badge, and the best loop is remembered. */
+    onNewLoop(loop) {
+      const bonus = loopBonus(loop);
+      this.rules.addScore(bonus);
+      const badge = badgeFor(loop);
+      const record = loop > this.bestLoop;
+      if (record) {
+        this.bestLoop = loop;
+        try { globalThis.localStorage?.setItem('mathStriker.bestLoop.v1', String(loop)); } catch { /* private mode */ }
+      }
+      this.addText(W / 2, H / 2 + 30, `LOOP ${loop} REACHED  +${bonus}`, COLORS.gold, 24);
+      this.showToast(badge ? `${badge.name}${record ? '  (NEW BEST!)' : ''}` : `LOOP ${loop}`, 3.4);
+    }
+
     _loadHigh() {
       try { return Number(globalThis.localStorage?.getItem(CONFIG.storageKey)) || 0; } catch { return 0; }
     }
@@ -5414,12 +5656,13 @@ const __mod_game = (() => {
       if (this.state === 'menu') drawMenu(ctx, this);
       else if (this.state === 'leaderboard') drawLeaderboard(ctx, this);
       else if (this.state === 'howto') drawHowTo(ctx, this);
+      else if (this.state === 'story') drawStory(ctx, this);
       else if (this.state === 'install') drawInstall(ctx, this);
       else this.drawWorld(ctx);
       ctx.restore();
 
       // Full-screen overlays are drawn outside the shake transform.
-      if (this.state !== 'menu' && this.state !== 'leaderboard' && this.state !== 'howto' && this.state !== 'install') {
+      if (this.state !== 'menu' && this.state !== 'leaderboard' && this.state !== 'howto' && this.state !== 'install' && this.state !== 'story') {
         if (this.flash) {
           ctx.fillStyle = this.flash.color;
           ctx.fillRect(0, 0, W, H);
@@ -5439,7 +5682,7 @@ const __mod_game = (() => {
     }
 
     drawBackground(ctx) {
-      const hue = this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' || this.state === 'install' ? 215 : this.stage.hue;
+      const hue = this.state === 'menu' || this.state === 'leaderboard' || this.state === 'howto' || this.state === 'install' || this.state === 'story' ? 215 : this.stage.hue;
       const g = ctx.createLinearGradient(0, 0, 0, H);
       g.addColorStop(0, `hsl(${hue}, 55%, 9%)`);
       g.addColorStop(1, `hsl(${hue + 20}, 60%, 4%)`);
