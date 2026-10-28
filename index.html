@@ -237,7 +237,7 @@ const __mod_config = (() => {
     // --- Touch controls (rectangles are in canvas coordinates) -----------------
     touch: {
       dragSensitivity: 1.3,                      // ship moves this much per pixel dragged
-      bomb: { x: 10, y: 628, w: 156, h: 66 },   // bigger and higher, so it is easy to see and hit
+      bomb: { x: 10, y: 646, w: 112, h: 46 },   // compact, but easy to see and hit
       pause: { x: 420, y: 66, w: 52, h: 40 },
       mute: { x: 362, y: 66, w: 52, h: 40 },
     },
@@ -3380,23 +3380,24 @@ const __mod_ui = (() => {
       ctx.save();
       ctx.shadowColor = bombColor;
       ctx.shadowBlur = ready ? 12 + 14 * pulse : 0;
-      ctx.fillStyle = ready ? `rgba(${40 + 50 * pulse | 0},16,${90 + 40 * pulse | 0},0.88)` : 'rgba(20,24,40,0.75)';
+      ctx.fillStyle = ready ? `rgba(${40 + 50 * pulse | 0},16,${90 + 40 * pulse | 0},${0.55 + 0.3 * pulse})` : 'rgba(20,24,40,0.45)'; // see-through, so it hides little
       ctx.strokeStyle = bombColor;
       ctx.lineWidth = ready ? 3 : 2;
-      pathRoundRect(ctx, b.x, b.y, b.w, b.h, 16);
+      pathRoundRect(ctx, b.x, b.y, b.w, b.h, 12);
       ctx.fill();
       ctx.stroke();
       ctx.restore();
       // little bomb icon with a fuse spark
-      const bx = b.x + 32, by = b.y + b.h / 2 + 4;
+      const bx = b.x + 24, by = b.y + b.h / 2 + 3;
       ctx.fillStyle = ready ? '#1b1138' : '#2a3350';
       ctx.strokeStyle = bombColor;
       ctx.lineWidth = 3;
-      ctx.beginPath(); ctx.arc(bx, by, 15, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(bx + 9, by - 12); ctx.quadraticCurveTo(bx + 16, by - 22, bx + 22, by - 18); ctx.stroke();
-      if (ready) { ctx.fillStyle = '#ffd75e'; ctx.beginPath(); ctx.arc(bx + 22, by - 18, 3 + 2 * Math.sin(game.time * 20), 0, Math.PI * 2); ctx.fill(); }
-      drawText(ctx, 'BOMB', b.x + 112, b.y + 22, { size: 18, color: bombColor, glow: ready ? 8 : 0 });
-      drawText(ctx, `×${game.bombs}`, b.x + 112, b.y + 48, { size: 24, color: ready ? '#ffffff' : '#6f7f9c', glow: ready ? 6 : 0 });
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(bx, by, 11, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(bx + 7, by - 9); ctx.quadraticCurveTo(bx + 12, by - 16, bx + 17, by - 13); ctx.stroke();
+      if (ready) { ctx.fillStyle = '#ffd75e'; ctx.beginPath(); ctx.arc(bx + 17, by - 13, 2.5 + 1.5 * Math.sin(game.time * 20), 0, Math.PI * 2); ctx.fill(); }
+      drawText(ctx, 'BOMB', b.x + 74, b.y + 16, { size: 13, color: bombColor, glow: ready ? 6 : 0 });
+      drawText(ctx, `×${game.bombs}`, b.x + 74, b.y + 34, { size: 18, color: ready ? '#ffffff' : '#6f7f9c' });
 
       const p = CONFIG.touch.pause;
       ctx.fillStyle = 'rgba(10,18,40,0.75)';
