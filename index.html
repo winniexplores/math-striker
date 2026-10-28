@@ -212,6 +212,8 @@ const __mod_config = (() => {
 
     // --- Math rules -------------------------------------------------------------
     gainCapPct: 0.25, gainCapMin: 10, gainCapMax: 150, // x and / stages: most one catch can add
+    lossCapPct: 0.67, lossCapMin: 10, lossCapMax: 600, // x and / stages: most ONE bad catch can take: two thirds of the score, and never more than 600 (so a big score is not wiped out)
+    hazardMaxExtra: 150,      // a red bullet's percentage share never takes more than this
     maxScore: 999999,         // the score can never go above this
     dangerPerStage: 0.35,     // enemy "-n" bullets hurt (1 + this*stagesCleared) times more
     hazardPercent: 0.04,      // a size-9 bullet also takes this share of your CURRENT score
@@ -235,7 +237,7 @@ const __mod_config = (() => {
     // --- Touch controls (rectangles are in canvas coordinates) -----------------
     touch: {
       dragSensitivity: 1.3,                      // ship moves this much per pixel dragged
-      bomb: { x: 8, y: 660, w: 130, h: 50 },
+      bomb: { x: 10, y: 628, w: 156, h: 66 },   // bigger and higher, so it is easy to see and hit
       pause: { x: 420, y: 66, w: 52, h: 40 },
       mute: { x: 362, y: 66, w: 52, h: 40 },
     },
@@ -948,7 +950,7 @@ const __mod_upgrades = (() => {
     { id: 'magnet', icon: '◎', name: 'LUCKY MAGNET', desc: 'Pickups drift toward you.',           max: 3, apply: (m) => { m.magnet += 55; } },
     { id: 'graze',  icon: '⚡', name: 'DAREDEVIL',    desc: 'CLOSE CALL bonus is doubled.',        max: 2, apply: (m) => { m.graze *= 2; } },
     { id: 'bombs',  icon: '◉', name: 'BOMB CACHE',   desc: `Refill Prime Bombs to ${CONFIG.maxBombs}.`, max: 99, instant: 'bombs' },
-    { id: 'repair', icon: '+', name: 'REPAIR',       desc: 'Gain 40 score right now.',            max: 99, instant: 'repair' },
+    { id: 'repair', icon: '+', name: 'REPAIR',       desc: 'Gain 20% of your score (at least 60).',            max: 99, instant: 'repair' },
   ];
 
   const upgradeById = (id) => UPGRADES.find((u) => u.id === id);
@@ -971,7 +973,7 @@ const __mod_upgrades = (() => {
     game.owned[id] = (game.owned[id] || 0) + 1;
     if (u.apply) { u.apply(game.mods); return u.name; }
     if (u.instant === 'bombs') game.bombs = CONFIG.maxBombs;
-    else if (u.instant === 'repair') game.rules.addScore(40);
+    else if (u.instant === 'repair') game.rules.addScore(Math.min(2000, Math.max(60, Math.round(Math.max(0, game.rules.score) * 0.2)))); // scales with your score
     else if (u.instant === 'heart') {
       if (game.lives < CONFIG.maxLives) game.lives++;
       else game.rules.addScore(60);
@@ -1112,10 +1114,8 @@ const __mod_mathRules = (() => {
         this.addScore(n);
         return { delta: n, label: `|${MINUS}${n}|=+${n}`, tone: 'good', absorbed: true };
       }
-      // flat n, plus a small share of a big score so bullets still matter late on
-      const pct = CONFIG.hazardPercent * Math.min(n, 9) / 9;
-      const base = n + Math.ceil(Math.max(0, this.score) * pct);
-      const d = Math.max(1, Math.round(base * this.character.lossScale * this.dangerScale * this.mods.loss));
+      // EXACT: a bullet that says -10 takes 10 (only an armor upgrade card can make it less)
+      const d = Math.max(1, Math.round(n * this.mods.loss));
       this.score -= d;
       return { delta: -d, label: `${MINUS}${d}`, tone: 'bad' };
     }
@@ -1160,7 +1160,9 @@ const __mod_mathRules = (() => {
         }
         else {
           // a pilot's defense softens every ordinary loss (never a kill)
-          const loss = Math.max(1, S - Math.max(1, result));
+          let loss = Math.max(1, S - Math.max(1, result));
+          // x and / stages: ONE bad catch takes at most two thirds of the score, and never more than 600
+          if (op === '×' || op === '÷') loss = Math.min(loss, Math.min(CONFIG.lossCapMax, Math.max(CONFIG.lossCapMin, Math.round(S * CONFIG.lossCapPct))));
           result = S - Math.max(1, Math.round(loss * this.character.lossScale * this.mods.loss));
         }
       }
@@ -2842,7 +2844,7 @@ const __mod_boss = (() => {
     },
     {
       // Gimmick: summons tough zeros, and BOUNCES around the screen from phase 2.
-      name: 'THE PRODUCT', glyph: '×', hue: 40, hp: 90, value: 4, reward: 160, sides: 8,
+      name: 'THE PRODUCT', glyph: '×', hue: 40, hp: 90, value: 5, reward: 160, sides: 8,
       attacks: [{ type: 'summon', every: 4.2, n: 2, kind: 'zero' }, { type: 'fan', every: 1.9, n: 4, spread: 0.26 }],
       phase2: [{ type: 'ring', every: 5.0, n: 8 }],
       moves: [{ type: 'bounce', from: 2, every: 13, first: 7, dur: 4.5 }],
@@ -2850,7 +2852,7 @@ const __mod_boss = (() => {
     },
     {
       // Gimmick: TELEPORTS and drops sudden "÷" blasts where you stand: leave the red circle!
-      name: 'THE QUOTIENT', glyph: '÷', hue: 340, hp: 125, value: 3, reward: 260, sides: 5,
+      name: 'THE QUOTIENT', glyph: '÷', hue: 340, hp: 125, value: 6, reward: 260, sides: 5,
       // fewer red bullets (they cut your score): the danger comes from the blasts and the teleport instead
       attacks: [{ type: 'fan', every: 2.2, n: 3, spread: 0.3 }, { type: 'rain', every: 4.6, n: 3 }, { type: 'fall', every: 3.8, n: 3 }],
       phase2: [{ type: 'ring', every: 5.0, n: 8 }, { type: 'fall', every: 6.5, n: 2 }],
@@ -3371,13 +3373,30 @@ const __mod_ui = (() => {
     if (game.touchMode) {
       // On-screen buttons for touch players
       const b = CONFIG.touch.bomb;
-      ctx.fillStyle = 'rgba(20,10,50,0.75)';
+      // pulses when it would help: the screen is crowded with red things
+      const crowded = game.tokens.filter((t) => t.role === 'bad' && !t.dead).length + game.bullets.filter((q) => q.owner === 'enemy' && !q.dead).length >= 7;
+      const ready = game.bombs > 0;
+      const pulse = ready && crowded ? 0.5 + 0.5 * Math.sin(game.time * 9) : 0;
+      ctx.save();
+      ctx.shadowColor = bombColor;
+      ctx.shadowBlur = ready ? 12 + 14 * pulse : 0;
+      ctx.fillStyle = ready ? `rgba(${40 + 50 * pulse | 0},16,${90 + 40 * pulse | 0},0.88)` : 'rgba(20,24,40,0.75)';
       ctx.strokeStyle = bombColor;
-      ctx.lineWidth = 2;
-      pathRoundRect(ctx, b.x, b.y, b.w, b.h, 12);
+      ctx.lineWidth = ready ? 3 : 2;
+      pathRoundRect(ctx, b.x, b.y, b.w, b.h, 16);
       ctx.fill();
       ctx.stroke();
-      drawText(ctx, `BOMB ×${game.bombs}`, b.x + b.w / 2, b.y + b.h / 2, { size: 17, color: bombColor });
+      ctx.restore();
+      // little bomb icon with a fuse spark
+      const bx = b.x + 32, by = b.y + b.h / 2 + 4;
+      ctx.fillStyle = ready ? '#1b1138' : '#2a3350';
+      ctx.strokeStyle = bombColor;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(bx, by, 15, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(bx + 9, by - 12); ctx.quadraticCurveTo(bx + 16, by - 22, bx + 22, by - 18); ctx.stroke();
+      if (ready) { ctx.fillStyle = '#ffd75e'; ctx.beginPath(); ctx.arc(bx + 22, by - 18, 3 + 2 * Math.sin(game.time * 20), 0, Math.PI * 2); ctx.fill(); }
+      drawText(ctx, 'BOMB', b.x + 112, b.y + 22, { size: 18, color: bombColor, glow: ready ? 8 : 0 });
+      drawText(ctx, `×${game.bombs}`, b.x + 112, b.y + 48, { size: 24, color: ready ? '#ffffff' : '#6f7f9c', glow: ready ? 6 : 0 });
 
       const p = CONFIG.touch.pause;
       ctx.fillStyle = 'rgba(10,18,40,0.75)';
@@ -3398,18 +3417,27 @@ const __mod_ui = (() => {
       drawText(ctx, `PRIME BOMB [B]  ×${game.bombs}`, 12, H - 16, { size: 13, align: 'left', color: bombColor });
     }
 
-    // Bottom-right: active power-up timers
-    let y = H - 16;
+    // Active power-up timers: a row of chips at the TOP, where a phone never hides them
+    let cx = 10;
     for (const kind of ['abs', 'pi', 'sq', 'slow', 'double', 'freeze', 'guard']) {
       const left = r.fx[kind];
       if (left <= 0) continue;
       const info = POWERUP_INFO[kind];
-      ctx.fillStyle = 'rgba(255,255,255,0.12)';
-      ctx.fillRect(W - 72, y - 4, 60, 6);
+      const frac = clamp(left / (CONFIG.powerupDuration[kind] * r.mods.powerTime), 0, 1);
+      const w = 70;
+      const blink = frac < 0.25 && Math.floor(game.time * 6) % 2 === 0; // blinks when it is about to run out
+      ctx.fillStyle = 'rgba(8,16,36,0.82)';
+      ctx.strokeStyle = blink ? '#ffffff' : info.color;
+      ctx.lineWidth = 2;
+      pathRoundRect(ctx, cx, 114, w, 24, 8);
+      ctx.fill();
+      ctx.stroke();
+      drawText(ctx, info.glyph, cx + 16, 126, { size: info.glyph.length > 2 ? 10 : 14, color: info.color });
+      ctx.fillStyle = 'rgba(255,255,255,0.14)';
+      ctx.fillRect(cx + 32, 122, 32, 8);
       ctx.fillStyle = info.color;
-      ctx.fillRect(W - 72, y - 4, 60 * clamp(left / (CONFIG.powerupDuration[kind] * r.mods.powerTime), 0, 1), 6);
-      drawText(ctx, info.glyph, W - 80, y - 1, { size: 15, align: 'right', color: info.color });
-      y -= 22;
+      ctx.fillRect(cx + 32, 122, 32 * frac, 8);
+      cx += w + 6;
     }
 
     // Boss health bar: the boss is a number, and the bar is how much of it is left
