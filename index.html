@@ -2870,11 +2870,11 @@ const __mod_boss = (() => {
    * clones, a turning shield, teleports, slams, bounces and warned blasts, but fewer plain bullets.
    */
   const ZERO_BOSS = {
-    name: 'THE ZERO', glyph: '0', hue: 215, color: '#dfe9ff', hp: 260, value: 6, reward: 500, sides: 24, final: true,
+    name: 'THE ZERO', glyph: '0', hue: 215, color: '#dfe9ff', hp: 165, value: 6, reward: 500, sides: 24, final: true,
     attacks: [{ type: 'fan', every: 2.1, n: 3, spread: 0.3 }, { type: 'rain', every: 5.0, n: 3 }, { type: 'fall', every: 4.2, n: 3 }],
     phase2: [{ type: 'laser', every: 6.5 }, { type: 'ring', every: 5.5, n: 8 }],
     shield: { half: 0.8 },
-    clones: { at: 0.5, n: 2, hp: 9 },
+    clones: { at: 0.5, n: 2, hp: 7 },
     moves: [{ type: 'teleport', from: 1, every: 7, first: 5 }, { type: 'slam', from: 2, every: 10, first: 4 }, { type: 'bounce', from: 3, every: 12, first: 6, dur: 4 }],
     intro: 'Everything it touches becomes nothing.',
     taunt: 'I am the number that ends all numbers.', restored: 'THE ZERO IS DEFEATED.',
