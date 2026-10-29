@@ -1731,17 +1731,24 @@ const __mod_entities = (() => {
       const col = this.resolved === 'right' ? COLORS.good : this.resolved === 'wrong' ? COLORS.bad : COLORS.cyan;
       ctx.save();
       ctx.globalAlpha = Math.max(0, this.fade);
+      const pulse = this.resolved ? 0 : 0.5 + 0.5 * Math.sin(this.t * 6 + this.x * 0.01);   // all three boxes breathe, so they stand out
       ctx.shadowColor = col;
-      ctx.shadowBlur = 16;
-      ctx.fillStyle = 'rgba(8,24,52,0.9)';
+      ctx.shadowBlur = 12 + 14 * pulse;
+      ctx.fillStyle = 'rgba(8,24,52,0.92)';
       ctx.strokeStyle = col;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3 + pulse;
       pathRoundRect(ctx, this.x - this.w / 2, this.y - this.h / 2, this.w, this.h, 14);
       ctx.fill();
       ctx.stroke();
       ctx.shadowBlur = 0;
-      // little "=?" tag so it reads as a question
-      drawText(ctx, this.text, this.x, this.y + 1, { size: 26, color: '#ffffff', glow: 6 });
+      if (!this.resolved) {   // a faint outer line that grows and fades
+        ctx.globalAlpha = Math.max(0, this.fade) * 0.35 * (1 - pulse);
+        ctx.lineWidth = 2;
+        pathRoundRect(ctx, this.x - this.w / 2 - 4 - 4 * pulse, this.y - this.h / 2 - 4 - 4 * pulse, this.w + 8 + 8 * pulse, this.h + 8 + 8 * pulse, 18);
+        ctx.stroke();
+        ctx.globalAlpha = Math.max(0, this.fade);
+      }
+      drawText(ctx, this.text, this.x, this.y + 1, { size: this.text.length > 4 ? 26 : 30, color: '#ffffff', glow: 6 });
       ctx.restore();
     }
   }
@@ -1751,12 +1758,13 @@ const __mod_entities = (() => {
   // -----------------------------------------------------------------------------
   class Ring {
     constructor(x, y, color, max = 70, speed = 260, width = 4) {
-      Object.assign(this, { x, y, color, max, speed, width, r: 6, dead: false });
+      Object.assign(this, { x, y, color, max, speed, width, r: 6, age: 0, dead: false });
     }
     update(dt) {
       this.r += this.speed * dt;
-      this.speed *= 0.97;
-      if (this.r >= this.max) this.dead = true;
+      this.speed *= Math.pow(0.97, dt * 60);   // slows down with TIME, not with frames (slow motion used to freeze a ring half-way)
+      this.age += dt;
+      if (this.r >= this.max || this.age > 1.1 || this.speed < 4) this.dead = true;   // never lingers
     }
     draw(ctx) {
       ctx.globalAlpha = Math.max(0, 1 - this.r / this.max);
@@ -2127,7 +2135,7 @@ const __mod_spawner = (() => {
         this.gateTimer -= dt;
         if (this.gateTimer <= 0) {
           const [lo, hi] = CONFIG.gates.interval;
-          this.gateTimer = lo + (hi - lo) * this.rng();
+          this.gateTimer = (lo + (hi - lo) * this.rng()) * (this.twist?.gateMul || 1);
           // wait until no wall is on screen, so a wall can never sit below (or run into) the answers
           const wallOn = obstacles.some((o) => o.kind === 'wall' && !o.dead);
           if (wallOn) this.gateTimer = 1;
@@ -2149,7 +2157,9 @@ const __mod_spawner = (() => {
     _makeGates(stage, ctx, gates) {
       const sc = ctx.stagesCleared || 0;
       // the first stage is MAKE N only; afterwards the two puzzle types take turns at random
-      const solve = sc >= 1 && this.rng() < CONFIG.gates.solveChance;
+      let solve = sc >= 1 && this.rng() < CONFIG.gates.solveChance;
+      if (this.twist?.gateOnly === 'solve') solve = true;       // daily twists
+      else if (this.twist?.gateOnly === 'make') solve = false;
       const puzzle = (solve ? makeSolve : makeGate)(stage.op, this.rng, sc);
       const setId = ++this.gateSeq;
       const { w, h, speed } = CONFIG.gates;
@@ -2697,10 +2707,11 @@ const __mod_ranked = (() => {
       this.onlineUrl = normalizeUrl(opts.onlineUrl ?? CONFIG.leaderboard.onlineUrl);
       this.fetchFn = opts.fetchFn || (typeof fetch === 'function' ? fetch.bind(globalThis) : null);
       this.now = opts.now || (() => new Date());
+      this.seasonFn = opts.seasonFn || seasonId;   // the DAILY board uses one id per day instead of per month
       this.memory = {};
     }
 
-    get season() { return seasonId(this.now()); }
+    get season() { return this.seasonFn(this.now()); }
     pid = '';  // the registered player's id (sent with every online score)
 
     get online() { return Boolean(this.onlineUrl && this.fetchFn); }
@@ -2819,6 +2830,7 @@ const __mod_combo = (() => {
       this.count = 0;
       this.timer = 0;
       this.best = 0;
+      this.mul = 1;       // the daily twist COMBO FEVER doubles the flat bonuses
     }
 
     /** One more hit. Returns a flat score bonus (0 unless a milestone was reached). */
@@ -2827,7 +2839,7 @@ const __mod_combo = (() => {
       this.timer = this.cfg.window;
       this.best = Math.max(this.best, this.count);
       if (this.count % this.cfg.milestone === 0) {
-        return Math.min(this.cfg.maxBonus, this.cfg.bonus * (this.count / this.cfg.milestone));
+        return Math.round(Math.min(this.cfg.maxBonus, this.cfg.bonus * (this.count / this.cfg.milestone)) * this.mul);
       }
       return 0;
     }
@@ -3523,6 +3535,48 @@ const __mod_stats = (() => {
   return { dayId, prevDayId, dailySeed, Stats };
 })();
 
+/* ======================= FILE: daily.js ======================= */
+const __mod_daily = (() => {
+  // =============================================================================
+  // daily.js  -  the DAILY CHALLENGE twist. Every day has one special rule, picked from the
+  // date, so every phone sees the same twist (and the same enemies) on the same day.
+  // The twist is described with plain fields that game.js, spawner.js and combo.js read.
+  // =============================================================================
+
+  const { hash53 } = __mod_rng;
+
+  const TWISTS = [
+    { id: 'fast',    name: 'FAST FOES',    desc: 'Everything is 60% faster.', fast: 0.6 },
+    { id: 'gates',   name: 'GATE RUSH',    desc: 'Answer gates come twice as often.', gateMul: 0.5 },
+    { id: 'solve',   name: 'SOLVE DAY',    desc: 'Every gate is SOLVE FOR N.', gateOnly: 'solve', gateMul: 0.7 },
+    { id: 'make',    name: 'MAKE DAY',     desc: 'Every gate is MAKE N.', gateOnly: 'make', gateMul: 0.7 },
+    { id: 'boss',    name: 'BOSS RUSH',    desc: 'Stages are short: bosses come fast.', stageLen: 22 },
+    { id: 'combo',   name: 'COMBO FEVER',  desc: 'Combo bonuses are doubled.', comboMul: 2 },
+    { id: 'bombs',   name: 'BOMB DAY',     desc: 'Start with 4 Prime Bombs.', bombs: 4 },
+    { id: 'onelife', name: 'ONE LIFE',     desc: 'Only one life. Be careful.', lives: 1 },
+  ];
+
+  const DAY = 86400000;
+
+  /** Twists in the order they come up in cycle `c` (every twist once per cycle, shuffled by the cycle number). */
+  function cycleOrder(c) {
+    const order = [...TWISTS].sort((a, b) => hash53(`twist:${c}:${a.id}`).localeCompare(hash53(`twist:${c}:${b.id}`)));
+    if (c > 0) {
+      const lastOfPrev = [...TWISTS].sort((a, b) => hash53(`twist:${c - 1}:${a.id}`).localeCompare(hash53(`twist:${c - 1}:${b.id}`))).pop();
+      if (order[0] === lastOfPrev) [order[0], order[1]] = [order[1], order[0]];   // never the same twist on two days in a row
+    }
+    return order;
+  }
+
+  /** The twist for a day id ('2026-10-28'): every twist once every 8 days, in a shuffled order. */
+  function twistFor(id) {
+    const n = Math.floor(Date.parse(`${id}T00:00:00Z`) / DAY);
+    const c = Math.floor(n / TWISTS.length);
+    return cycleOrder(c)[((n % TWISTS.length) + TWISTS.length) % TWISTS.length];
+  }
+  return { TWISTS, twistFor };
+})();
+
 /* ======================= FILE: ui.js ======================= */
 const __mod_ui = (() => {
   // =============================================================================
@@ -3534,8 +3588,9 @@ const __mod_ui = (() => {
   const { STAGES } = __mod_stages;
   const { STORY, LOOP_STORY, LOOP_STORY_DEFAULT, badgeFor } = __mod_story;
   const { shipArt, logoArt } = __mod_art;
+  const { twistFor } = __mod_daily;
   const { drawText, drawShip, drawHeart, pathRoundRect } = __mod_draw;
-  const { POWERUP_INFO, COLORS } = __mod_entities;
+  const { POWERUP_INFO, COLORS, MINUS } = __mod_entities;
   const { tierFor, nextTier, seasonLabel } = __mod_ranked;
 
   const W = CONFIG.width;
@@ -3617,17 +3672,17 @@ const __mod_ui = (() => {
       });
     }
 
-    drawText(ctx, `${stage.op}  ${stage.name}`, W / 2 + 10, 13, { size: 11, color: `hsl(${stage.hue},90%,70%)` });
-    const prog = clamp(game.stageTime / CONFIG.stageDuration, 0, 1);
+    drawText(ctx, `${stage.op}  ${stage.name}`, W / 2 + 10, 13, { size: 17, color: `hsl(${stage.hue},90%,70%)`, glow: 6 });   // big enough to read at a glance
+    const prog = clamp(game.stageTime / game.stageLen, 0, 1);
     const bossPhase = game.phase !== 'stage';
     ctx.fillStyle = 'rgba(255,255,255,0.12)';
-    ctx.fillRect(W / 2 - 60, 24, 140, 4);
+    ctx.fillRect(W / 2 - 70, 27, 160, 4);
     ctx.fillStyle = bossPhase ? COLORS.bad : `hsl(${stage.hue},90%,60%)`;
-    ctx.fillRect(W / 2 - 60, 24, 140 * prog, 4);
+    ctx.fillRect(W / 2 - 70, 27, 160 * prog, 4);
 
     // Lives: filled heart = life left, faint outline = life lost
     for (let i = 0; i < CONFIG.maxLives; i++) {
-      drawHeart(ctx, W / 2 + 10 + (i - (CONFIG.maxLives - 1) / 2) * 26, 41, 6.5, COLORS.heart, i < game.lives);
+      drawHeart(ctx, W / 2 + 10 + (i - (CONFIG.maxLives - 1) / 2) * 26, 43, 6.5, COLORS.heart, i < game.lives);
     }
 
     // The rule of this stage: S (operation) x
@@ -3736,18 +3791,26 @@ const __mod_ui = (() => {
     // MAKE-N banner
     const banner = game.gateBanner;
     if (banner !== null && !game.boss) {
-      const pulse = 0.85 + 0.15 * Math.sin(game.time * 8);
-      ctx.fillStyle = 'rgba(8,24,52,0.9)';
+      const pulse = 0.5 + 0.5 * Math.sin(game.time * 6);     // 0..1, a gentle light pulse
+      const solve = game.gates.some((g) => !g.resolved && g.kind === 'solve');
+      const bh = solve ? 52 : 44;
+      const size = Math.min(solve ? 30 : 26, Math.floor(236 / (banner.length * 0.62)));   // never reaches the sound and pause buttons
+      const bw = Math.min(280, Math.max(210, banner.length * (size * 0.62) + 44));
+      // soft halo that breathes
+      ctx.fillStyle = `rgba(77,210,255,${0.10 + 0.14 * pulse})`;
+      pathRoundRect(ctx, W / 2 - bw / 2 - 8, 60 - 4, bw + 16, bh + 8, 16);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(8,24,52,0.94)';
       ctx.strokeStyle = COLORS.cyan;
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3 + pulse;
       ctx.shadowColor = COLORS.cyan;
-      ctx.shadowBlur = 14 * pulse;
-      const bw = Math.max(184, banner.length * 17 + 36);
-      pathRoundRect(ctx, W / 2 - bw / 2, 64, bw, 38, 12);
+      ctx.shadowBlur = 10 + 16 * pulse;
+      pathRoundRect(ctx, W / 2 - bw / 2, 60, bw, bh, 12);
       ctx.fill();
       ctx.stroke();
       ctx.shadowBlur = 0;
-      drawText(ctx, banner, W / 2, 84, { size: 24, color: '#ffffff', glow: 8 });
+      if (solve) drawText(ctx, 'SOLVE FOR n', W / 2, 60 - 0 + 12, { size: 10, color: '#9fe8ff', weight: 'normal' });
+      drawText(ctx, banner, W / 2, 60 + bh / 2 + (solve ? 5 : 0), { size, color: '#ffffff', glow: 8 });
     }
 
     // Combo meter
@@ -3768,6 +3831,17 @@ const __mod_ui = (() => {
   // -----------------------------------------------------------------------------
   // Stage banner (fades in/out at the start of each stage)
   // -----------------------------------------------------------------------------
+  /** Split text into lines of at most `max` characters (the game font is monospace). */
+  function wrapText(text, max) {
+    const lines = [];
+    let line = '';
+    for (const word of String(text).split(' ')) {
+      if (line && (line + ' ' + word).length > max) { lines.push(line); line = word; } else line = line ? `${line} ${word}` : word;
+    }
+    if (line) lines.push(line);
+    return lines;
+  }
+
   function drawBanner(ctx, game) {
     const b = game.banner;
     if (b.t >= b.dur) return;
@@ -3788,8 +3862,14 @@ const __mod_ui = (() => {
       const flash = Math.floor(b.t * 6) % 2 === 0;
       drawText(ctx, 'WARNING', W / 2, CONFIG.height / 2 - 20, { size: 18, color: flash ? COLORS.bad : '#ffffff', glow: 14 });
       drawText(ctx, b.boss.name, W / 2, CONFIG.height / 2 + 20, { size: 32, color: `hsl(${b.boss.hue},95%,68%)`, glow: 20 });
-      drawText(ctx, b.boss.intro || 'Shoot its number down to 0', W / 2, CONFIG.height / 2 + 54, { size: 13, color: '#b9c9e6', weight: 'normal' });
-      if (b.boss.taunt) drawText(ctx, `"${b.boss.taunt}"`, W / 2, CONFIG.height / 2 + 84, { size: 14, color: `hsl(${b.boss.hue},90%,78%)` });
+      const introLines = wrapText(b.boss.intro || 'Shoot its number down to 0', 50);
+      introLines.forEach((l, i) => drawText(ctx, l, W / 2, CONFIG.height / 2 + 56 + i * 20, { size: 14, color: '#d3e0f5', weight: 'normal' }));
+      const ty = CONFIG.height / 2 + 56 + introLines.length * 20 + 18;
+      if (b.boss.taunt) wrapText(`"${b.boss.taunt}"`, 46).forEach((l, i) => drawText(ctx, l, W / 2, ty + i * 22, { size: 15, color: `hsl(${b.boss.hue},90%,78%)` }));
+      if (game.introHold > 0 && b.t > 1.2) {
+        ctx.globalAlpha = a * (0.55 + 0.45 * Math.sin(game.time * 5));
+        drawText(ctx, 'TAP TO FIGHT', W / 2, CONFIG.height / 2 + 190, { size: 15, color: '#ffffff', glow: 8 });
+      }
       ctx.globalAlpha = 1;
       return;
     }
@@ -3858,9 +3938,11 @@ const __mod_ui = (() => {
 
     if (game.mode === 'daily') {
       const st = game.stats;
-      drawText(ctx, `Daily Challenge  ·  same enemies for everyone today`, W / 2, 206, { size: 11, color: '#5dffb0', weight: 'normal' });
+      const tw = twistFor(st.today);
+      drawText(ctx, `TODAY'S TWIST:  ${tw.name}`, W / 2, 205, { size: 13, color: '#5dffb0', glow: 6 });
+      drawText(ctx, tw.desc, W / 2, 222, { size: 11, color: '#cfe0ff', weight: 'normal' });
       const sk = st.streak;
-      drawText(ctx, `${sk > 0 ? `STREAK ${sk} DAY${sk > 1 ? 'S' : ''}` : 'Start a streak today'}${st.playedToday ? `  ·  today's best ${st.dayBest}` : '  ·  not played yet today'}`, W / 2, 224, { size: 12, color: '#9fb6d8', weight: 'normal' });
+      drawText(ctx, `${sk > 0 ? `STREAK ${sk} DAY${sk > 1 ? 'S' : ''}` : 'Start a streak today'}${st.playedToday ? `  ·  today's best ${st.dayBest}` : '  ·  not played yet today'}`, W / 2, 238, { size: 11, color: '#9fb6d8', weight: 'normal' });
     } else if (!ranked) {
       drawText(ctx, 'Relaxed endless run  ·  classic boards', W / 2, 206, { size: 12, color: '#9fb6d8', weight: 'normal' });
     } else {
@@ -3970,13 +4052,8 @@ const __mod_ui = (() => {
     },
     {
       title: 'SHAPES AND COLORS',
-      items: [
-        ['CIRCLE = CATCH IT', COLORS.good, ['Fly into it. It raises your score.']],
-        ['DIAMOND = AVOID IT', COLORS.bad, ['It lowers your score. Shoot it or dodge it.']],
-        ['DOUBLE OUTLINE = DEADLY', '#ffffff', ['×0, ÷0 and negatives in × and ÷ stages.']],
-        ['COLORS NEVER CHANGE', COLORS.cyan, ['Cyan = plus / positive.   Pink = minus / negative.', 'Violet = fraction.   White = zero.']],
-        ['ORANGE = ROCK OR WALL', COLORS.hazard, ['Cannot be shot. Costs a life. Fly through the gap.']],
-      ],
+      custom: 'shapes',   // drawn with real shapes (see drawShapesPage)
+      items: [],
     },
     {
       title: 'POWER-UPS',
@@ -4003,6 +4080,87 @@ const __mod_ui = (() => {
   ];
   const HOW_PAGE_COUNT = HOW_PAGES.length;
 
+  /** One example token: a circle (good) or a diamond (bad), with a sign or glyph inside. */
+  function sampleToken(ctx, x, y, shape, color, glyph, opts = {}) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = 'rgba(6,14,30,0.85)';
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2.5;
+    const r = 20;
+    const path = (k) => {
+      ctx.beginPath();
+      if (shape === 'circle') ctx.arc(0, 0, r + k, 0, Math.PI * 2);
+      else { const d = r * 1.3 + k; ctx.moveTo(0, -d); ctx.lineTo(d, 0); ctx.lineTo(0, d); ctx.lineTo(-d, 0); ctx.closePath(); }
+    };
+    path(0); ctx.fill(); ctx.stroke();
+    ctx.shadowBlur = 0;
+    if (opts.double) { ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; path(6); ctx.stroke(); }
+    ctx.restore();
+    if (opts.frac) {
+      drawText(ctx, '1', x + 1, y - 7, { size: 14, color });
+      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(x - 8, y + 1); ctx.lineTo(x + 10, y + 1); ctx.stroke();
+      drawText(ctx, '2', x + 1, y + 10, { size: 14, color });
+    } else drawText(ctx, glyph, x, y + 1, { size: glyph.length > 1 ? 16 : 30, color });
+  }
+
+  /** The SHAPES page: real pictures instead of words like CIRCLE, DIAMOND and ORANGE. */
+  function drawShapesPage(ctx, game) {
+    const tx = 178;
+    const t = game.time || 0;
+    const small = (str, x, y, c) => drawText(ctx, str, x, y, { size: 10, color: c, weight: 'normal' });
+    const body = (str, y) => drawText(ctx, str, tx, y, { size: 13, align: 'left', color: '#d3e0f5', weight: 'normal' });
+    // The SHAPE says what to do. The COLOR only says the sign. In SUBTRACTION the minus signs are the good ones.
+    // catch: a circle, whatever its sign
+    sampleToken(ctx, 52, 138, 'circle', COLORS.cyan, '+');
+    sampleToken(ctx, 118, 138, 'circle', COLORS.pink, MINUS);
+    small('+ stage', 52, 168, '#8fb3d9'); small('− stage', 118, 168, '#8fb3d9');
+    drawText(ctx, 'CATCH IT', tx, 126, { size: 18, align: 'left', color: COLORS.good, glow: 6 });
+    body('Fly into it.', 150); body('It raises your score.', 168);
+    // avoid: a diamond, whatever its sign
+    sampleToken(ctx, 52, 228, 'diamond', COLORS.pink, MINUS);
+    sampleToken(ctx, 118, 228, 'diamond', COLORS.cyan, '+');
+    small('+ stage', 52, 262, '#8fb3d9'); small('− stage', 118, 262, '#8fb3d9');
+    drawText(ctx, 'AVOID IT', tx, 216, { size: 18, align: 'left', color: COLORS.bad, glow: 6 });
+    body('It lowers your score.', 240); body('Shoot it or dodge it.', 258);
+    // deadly
+    sampleToken(ctx, 52, 318, 'diamond', '#ffffff', '0', { double: true });
+    drawText(ctx, 'DEADLY', tx, 306, { size: 18, align: 'left', color: '#ffffff', glow: 6 });
+    body('×0, ÷0 and negatives', 330); body('in × and ÷ stages.', 348);
+    // colour = the sign only
+    const xs = [52, 152, 252, 352];
+    [['+', COLORS.cyan, 'plus'], [MINUS, COLORS.pink, 'minus'], ['½', COLORS.violet, 'fraction'], ['0', '#ffffff', 'zero']].forEach(([g, c, l], i) => {
+      drawText(ctx, g, xs[i], 408, { size: 34, color: c, glow: 10 });
+      drawText(ctx, l, xs[i], 436, { size: 12, color: c, weight: 'normal' });
+    });
+    drawText(ctx, 'The color only shows the sign.', W / 2, 464, { size: 12, color: '#b9c9e6', weight: 'normal' });
+    drawText(ctx, 'The SHAPE tells you: catch or avoid.', W / 2, 482, { size: 13, color: COLORS.gold });
+    // rock and wall
+    ctx.save();
+    ctx.translate(64, 548);
+    ctx.rotate(t * 0.6);
+    ctx.shadowColor = COLORS.hazard; ctx.shadowBlur = 12;
+    ctx.fillStyle = '#2b1707'; ctx.strokeStyle = COLORS.hazard; ctx.lineWidth = 3;
+    ctx.beginPath();
+    [[-22, -8], [-10, -22], [10, -20], [23, -4], [16, 17], [-6, 22], [-20, 12]].forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.restore();
+    // a piece of striped wall
+    ctx.save();
+    ctx.beginPath(); ctx.rect(26, 584, 80, 18); ctx.clip();
+    ctx.fillStyle = '#1d1305'; ctx.fillRect(26, 584, 80, 18);
+    ctx.strokeStyle = COLORS.hazard; ctx.lineWidth = 6; ctx.beginPath();
+    for (let sx = 10 + ((t * 30) % 20); sx < 120; sx += 20) { ctx.moveTo(sx, 602); ctx.lineTo(sx + 18, 584); }
+    ctx.stroke();
+    ctx.restore();
+    ctx.strokeStyle = '#ffd9a0'; ctx.lineWidth = 2; ctx.strokeRect(26, 584, 80, 18);
+    drawText(ctx, 'ROCK AND WALL', tx, 536, { size: 18, align: 'left', color: COLORS.hazard, glow: 6 });
+    drawText(ctx, 'Cannot be shot. Costs a life.', tx, 560, { size: 13, align: 'left', color: '#d3e0f5', weight: 'normal' });
+    drawText(ctx, 'Fly through the gap.', tx, 579, { size: 13, align: 'left', color: '#d3e0f5', weight: 'normal' });
+  }
+
   function drawHowTo(ctx, game) {
     const pg = clamp(game.howPage || 0, 0, HOW_PAGES.length - 1);
     const page = HOW_PAGES[pg];
@@ -4010,6 +4168,7 @@ const __mod_ui = (() => {
     drawText(ctx, 'HOW TO PLAY', W / 2, 36, { size: 13, color: '#8fb3d9' });
     drawText(ctx, page.title, W / 2, 72, { size: 28, color: COLORS.gold, glow: 14 });
 
+    if (page.custom === 'shapes') drawShapesPage(ctx, game);
     let y = 116;
     for (const [head, color, lines] of page.items) {
       drawText(ctx, head, 28, y, { size: 16, align: 'left', color, glow: 6 });
@@ -4036,6 +4195,8 @@ const __mod_ui = (() => {
       drawText(ctx, '−', W / 2 + 90, dy + 1, { size: 30, color: COLORS.pink });
       drawText(ctx, 'catch', W / 2 - 90, dy + 44, { size: 13, color: COLORS.good });
       drawText(ctx, 'avoid', W / 2 + 90, dy + 44, { size: 13, color: COLORS.bad });
+      drawText(ctx, 'Example from the + stage. In the − stage it flips:', W / 2, dy + 74, { size: 11, color: '#9fb6d8', weight: 'normal' });
+      drawText(ctx, 'the − signs become the circles you catch.', W / 2, dy + 90, { size: 11, color: '#9fb6d8', weight: 'normal' });
     }
 
     // page dots
@@ -4256,7 +4417,7 @@ const __mod_ui = (() => {
     drawText(ctx, 'GAME OVER', W / 2, 232, { size: 46, color: COLORS.bad, glow: 20 });
 
     const daily = game.mode === 'daily';
-    drawText(ctx, ranked ? `RANKED RUN  ·  ${seasonLabel(game.season)}` : daily ? 'DAILY CHALLENGE' : 'BEST SCORE REACHED', W / 2, 288, { size: 12, color: ranked ? COLORS.gold : daily ? '#5dffb0' : '#8fb3d9' });
+    drawText(ctx, ranked ? `RANKED RUN  ·  ${seasonLabel(game.season)}` : daily ? `DAILY  ·  ${game.twist?.name || ''}` : 'BEST SCORE REACHED', W / 2, 288, { size: 12, color: ranked ? COLORS.gold : daily ? '#5dffb0' : '#8fb3d9' });
     drawText(ctx, String(Math.round(game.peakScore)), W / 2, 326, { size: 38, color: '#ffffff', glow: 10 });
 
     const mins = Math.floor(game.runTime / 60);
@@ -4267,7 +4428,8 @@ const __mod_ui = (() => {
       if (r) {
         drawText(ctx, `STREAK ${r.streak} DAY${r.streak > 1 ? 'S' : ''}`, W / 2, 368, { size: 22, color: '#5dffb0', glow: 12 });
         drawText(ctx, `TODAY'S BEST ${r.dayBest}${r.improved ? '  NEW!' : ''}`, W / 2, 396, { size: 14, color: r.improved ? COLORS.gold : '#cfe0ff' });
-        drawText(ctx, 'Play again today to beat it  ·  a new seed tomorrow', W / 2, 418, { size: 11, color: '#9fb6d8', weight: 'normal' });
+        drawText(ctx, r.rank > 0 ? `#${r.rank} today on this phone` : 'Play again today to beat it', W / 2, 418, { size: 12, color: '#9fb6d8', weight: 'normal' });
+        drawText(ctx, 'a new twist and new enemies tomorrow', W / 2, 438, { size: 11, color: '#7f94b8', weight: 'normal' });
       }
     } else if (ranked) {
       const r = game.rankedResult;
@@ -4323,8 +4485,8 @@ const __mod_ui = (() => {
 
     drawText(ctx, 'LEADERBOARD', W / 2, 52, { size: 30, color: COLORS.gold, glow: 16 });
 
-    const tabs = [['ranked', 'RANKED'], ['world', 'CLASSIC']];
-    const tab = v.tab === 'ranked' ? 'ranked' : 'world';
+    const tabs = [['ranked', 'RANKED'], ['daily', 'DAILY'], ['world', 'CLASSIC']];
+    const tab = v.tab === 'ranked' || v.tab === 'daily' ? v.tab : 'world';
     const tw = (W - 44 - 10 * (tabs.length - 1)) / tabs.length;
     tabs.forEach(([id, label], i) => {
       const rect = { x: 22 + i * (tw + 10), y: 80, w: tw, h: 34 };
@@ -4351,6 +4513,13 @@ const __mod_ui = (() => {
       if (rb.online) { rows = v.ranked.rows; status = v.ranked.status; caption = `season ${seasonLabel(rb.season)}  ·  one row per name`; }
       else { rows = rb.localRows(); caption = `season ${seasonLabel(rb.season)}  ·  one row per name  ·  this phone only (shared board not connected)`; }
     }
+    if (tab === 'daily') {
+      const db = game.dailyBoard;
+      const tw = twistFor(game.stats.today);
+      const label = `today  ·  ${tw.name}  ·  one row per name`;
+      if (db.online) { rows = v.daily.rows; status = v.daily.status; caption = label; }
+      else { rows = db.localRows(); caption = `${label}  ·  this phone only`; }
+    }
     drawText(ctx, caption, W / 2, 134, { size: 11, color: '#8fb3d9', weight: 'normal' });
 
     const y0 = 170;
@@ -4367,12 +4536,13 @@ const __mod_ui = (() => {
       drawText(ctx, 'Check your internet and try again later.', W / 2, 318, { size: 12, color: '#9fb6d8', weight: 'normal' });
     } else if (rows.length === 0) {
       drawText(ctx, 'No scores yet.', W / 2, 290, { size: 20, color: '#e8f0ff' });
-      drawText(ctx, tab === 'ranked' ? 'Play RANKED to claim the first spot!' : 'Be the first on the board!', W / 2, 322, { size: 13, color: '#9fb6d8', weight: 'normal' });
+      drawText(ctx, tab === 'ranked' ? 'Play RANKED to claim the first spot!' : tab === 'daily' ? 'Play today\'s DAILY to claim the first spot!' : 'Be the first on the board!', W / 2, 322, { size: 13, color: '#9fb6d8', weight: 'normal' });
     } else {
       rows.forEach((r, i) => {
         const y = y0 + i * step;
         const mine = tab === 'ranked'
           ? Boolean(game.rankedResult) && r.key === game.rankedResult.row?.key
+          : tab === 'daily' ? Boolean(game.dailyResult) && r.key === game.dailyResult.row?.key
           : Boolean(v.highlight) && r.t === v.highlight.t && r.score === v.highlight.score && r.name === v.highlight.name;
         if (mine) {
           ctx.fillStyle = 'rgba(255,215,94,0.2)';
@@ -4398,7 +4568,7 @@ const __mod_ui = (() => {
           drawText(ctx, CHARACTERS.find((c) => c.id === r.pilot)?.name || '', 90, y + 10, { size: 10, color: '#7f94b8', align: 'left', weight: 'normal' });
           drawText(ctx, String(r.score), W - 40, y - 6, { size: 18, color: mine ? COLORS.gold : '#ffffff', align: 'right' });
           drawText(ctx, tier.name, W - 40, y + 10, { size: 10, color: tier.color, align: 'right' });
-        } else {
+        } else { // DAILY and CLASSIC rows: pilot colour, name, score
           const dot = CHARACTERS.find((c) => c.id === r.pilot)?.color || '#8fb3d9';
           ctx.fillStyle = dot;
           ctx.beginPath();
@@ -4526,7 +4696,9 @@ const __mod_game = (() => {
   const { Combo } = __mod_combo;
   const { pickCards, applyUpgrade } = __mod_upgrades;
   const { RankedBoard, seasonSeed } = __mod_ranked;
+  const { dayId } = __mod_stats;
   const { Stats, dailySeed } = __mod_stats;
+  const { twistFor } = __mod_daily;
   const { mulberry32 } = __mod_rng;
   const { detectPlatform } = __mod_inapp;
   const { drawText } = __mod_draw;
@@ -4584,6 +4756,11 @@ const __mod_game = (() => {
       this.sfx.setLevel(this.settings.sfx);
       this.music?.setLevel(this.settings.music);
       this.stats = options.stats || new Stats();
+      this.dailyBoard = options.dailyBoard || new RankedBoard({
+        onlineUrl: CONFIG.leaderboard.onlineUrl, key: 'mathStriker.daily.v1', now: () => this.stats.now(),
+        seasonFn: (d) => `D${dayId(d)}`,   // 'D2026-10-28' (the D keeps Google Sheets from turning it into a date)
+      });
+      this.twist = null;
       this.statsOpen = false;   // the MY STATS box on the menu
       this.dailyResult = null;
       this.lbView = { tab: 'device', from: 'menu', highlight: null, online: { status: 'idle', rows: [] }, ranked: { status: 'idle', rows: [] } };
@@ -4614,6 +4791,9 @@ const __mod_game = (() => {
     // Run lifecycle
     // ===========================================================================
 
+    /** Seconds before the stage boss arrives (the BOSS RUSH twist makes it shorter). */
+    get stageLen() { return this.twist?.stageLen || CONFIG.stageDuration; }
+
     get stage() { return STAGES[this.stageIndex % STAGES.length]; }
     get character() { return this.rules.character; }
 
@@ -4643,6 +4823,7 @@ const __mod_game = (() => {
       // Ranked: everything random that affects the game comes from a season seed, so
       // every player faces the same enemy sequence. Looks (particles) use this.rng.
       this.dailyResult = null;
+      this.twist = this.mode === 'daily' ? twistFor(this.stats.today) : null;   // today's special rule
       this.runRng = this.mode === 'ranked' ? mulberry32(seasonSeed(this.season))
         : this.mode === 'daily' ? mulberry32(dailySeed(this.stats.today)) : this.rng;
       this.rules = new MathRules(character);
@@ -4651,7 +4832,9 @@ const __mod_game = (() => {
       this.player.mods = this.mods;
       this.owned = {};                 // upgrade id -> times taken
       this.spawner = new Spawner(this.runRng);
+      this.spawner.twist = this.twist;
       this.combo = new Combo();
+      this.combo.mul = this.twist?.comboMul || 1;
       this.boss = null;
       this.phase = 'stage';            // 'stage' | 'boss' | 'clear' (boss dead, waiting for the cards)
       this.upgradeDelay = 0;
@@ -4665,6 +4848,7 @@ const __mod_game = (() => {
       this.multPulse = 0;
       this.rankedResult = null;
       this.rankedSend = null;
+      this.dailySend = null;
 
       this.tokens = [];
       this.bullets = [];
@@ -4673,19 +4857,19 @@ const __mod_game = (() => {
       this.particles = [];
       this.texts = [];
 
-      this.lives = CONFIG.startLives;
+      this.lives = this.twist?.lives ?? CONFIG.startLives;
       this.invuln = 0;        // seconds of protection left after losing a life
       this.deathReason = '';  // 'score' or 'lives'
       this.nameEntry = false; // true while the "enter your name" box is open
       this.lastRow = null;    // the score row just saved (highlighted on the leaderboard)
-      this.bombs = character.bombs;
+      this.bombs = Math.min(CONFIG.maxBombs, character.bombs + (this.twist?.bombs ? this.twist.bombs - character.bombs : 0));
       this.stageIndex = 0;
       this.finale = false;             // the stage-4 follow-up where THE ZERO appears (once per run)
       this.zeroDone = false;
       this.story = null;
       this.stageTime = 0;
       this.runTime = 0;
-      this.difficulty = 1;
+      this.difficulty = 1 + (this.twist?.fast || 0);
       this.rules.setStage(this.stage, 0);
 
       this.displayScore = character.startScore;
@@ -4693,12 +4877,14 @@ const __mod_game = (() => {
       this.shake = 0;
       this.flash = null;     // { color, t }
       this.bombRing = null;  // { r }
+      this.introHold = 0;    // seconds the game waits while a boss is introduced
       this.deathTimer = 0;
       this.banner = { t: 0, dur: 2.8 };
       this.newBest = false;
 
       this._setState('playing');
       this.sfx.play('stage');
+      if (this.twist) this.showToast(`TODAY: ${this.twist.name}`, 3.2);
     }
 
     _setState(s) {
@@ -4715,7 +4901,9 @@ const __mod_game = (() => {
       this.bullets = this.bullets.filter((b) => b.owner === 'player');
       // the board is cleaned when a boss arrives: leftover red numbers pop (no reward) so nothing is left over to pile up
       for (const t of this.tokens) if (t.role === 'bad' && !t.dead) { t.dead = true; this.explode(t.x, t.y, COLORS.bad, 0.5); }
-      this.banner = { t: 0, dur: def.final ? 3.4 : 2.9, boss: def };
+      // the game waits while the boss is introduced, so there is time to read it (tap to skip)
+      this.introHold = def.final ? 5.2 : 4.2;
+      this.banner = { t: 0, dur: this.introHold + 0.5, boss: def };
       this.shake = Math.max(this.shake, 0.4);
       this.sfx.play('boss');
     }
@@ -4725,6 +4913,7 @@ const __mod_game = (() => {
       const b = this.boss;
       if (!b) return;
       this.boss = null;
+      this.introHold = 0;
       this.zones = [];
       this.phase = 'clear';
       this.bossesDefeated++;
@@ -4793,14 +4982,14 @@ const __mod_game = (() => {
       else if (cleared === 3 && !this.zeroDone) {
         // after the fourth Operator: a short run-up, then THE ZERO (first time through only)
         this.finale = true;
-        this.stageTime = CONFIG.stageDuration - 7;
+        this.stageTime = this.stageLen - 7;
         this.banner = { t: 0, dur: 3, finale: true };
         this.sfx.play('boss');
         return;
       }
       this.stageIndex++;
       this.stageTime = 0;
-      this.difficulty = 1 + CONFIG.loopDifficultyStep * Math.floor(this.stageIndex / STAGES.length); // endless loops get harder
+      this.difficulty = 1 + (this.twist?.fast || 0) + CONFIG.loopDifficultyStep * Math.floor(this.stageIndex / STAGES.length); // endless loops get harder
       this.rules.setStage(this.stage, this.stageIndex);
       this.spawner.onStageStart(this.stageIndex);
       this.banner = { t: 0, dur: 2.8 };
@@ -5049,6 +5238,7 @@ const __mod_game = (() => {
       if (!this.profile?.has) return;
       this.leaderboard.pid = this.profile.pid;
       this.rankedBoard.pid = this.profile.pid;
+      this.dailyBoard.pid = this.profile.pid;
       this.leaderboard.lastName = this.profile.name;
     }
 
@@ -5255,6 +5445,7 @@ const __mod_game = (() => {
         }
         case 'playing':
           // Buttons act through the same "just pressed" path as the keyboard.
+          if (this.introHold > 0) { if (this.banner.t > 1.2) this.introHold = 0; return true; }   // tap skips the boss introduction
           if (inRect(CONFIG.touch.bomb)) { this.input.justPressed.add('KeyB'); return true; }
           if (inRect(CONFIG.touch.pause)) { this.input.justPressed.add('KeyP'); return true; }
           if (inRect(CONFIG.touch.mute)) { this.sfx.toggleMute(); return true; }
@@ -5306,6 +5497,7 @@ const __mod_game = (() => {
           if (btn?.id === 'tab-device') this.lbView.tab = 'world';
           else if (btn?.id === 'tab-world') this.lbView.tab = 'world';
           else if (btn?.id === 'tab-ranked') this.lbView.tab = 'ranked';
+          else if (btn?.id === 'tab-daily') { this.lbView.tab = 'daily'; this._loadDailyTab(); }
           else if (btn?.id === 'again') this.startRun(this.character.id);
           else if (btn?.id === 'menu') this._setState('menu');
           else if (btn?.id === 'back') this.closeLeaderboard();
@@ -5325,8 +5517,17 @@ const __mod_game = (() => {
       const ranked = this.mode === 'ranked';
       const entry = { score, pilot: this.character.id, stage: this.stageIndex + 1 };
       this.stats.endRun({ score, stage: this.stageIndex + 1, seconds: this.runTime });
-      if (this.mode === 'daily') { // the daily challenge stays on this phone: no boards, no name box
-        if (score > 0) this.dailyResult = this.stats.endDaily(score);
+      if (this.mode === 'daily') { // the daily challenge never asks for a name: it uses the registered player
+        if (score > 0) {
+          this.dailyResult = this.stats.endDaily(score);
+          const name = this.profile?.has ? this.profile.name : this.leaderboard.lastName;
+          if (name) {
+            this._applyProfile();
+            const res = this.dailyBoard.submitLocal({ ...entry, name });
+            this.dailyResult = { ...this.dailyResult, ...res };
+            if (this.dailyBoard.online && res.improved) this.dailySend = this.dailyBoard.submitOnline(res.row).catch(() => false);
+          }
+        }
         return;
       }
 
@@ -5378,10 +5579,11 @@ const __mod_game = (() => {
 
     /** Show the leaderboard. `from` = 'menu' | 'gameover'. `after` = a promise to wait for before loading WORLD scores. */
     openLeaderboard(from, highlight = null, after = null) {
-      const tab = this.mode === 'ranked' ? 'ranked' : 'world';
-      const view = { tab, from, highlight, online: { status: 'idle', rows: [] }, ranked: { status: 'idle', rows: [] } };
+      const tab = this.mode === 'ranked' ? 'ranked' : this.mode === 'daily' ? 'daily' : 'world';
+      const view = { tab, from, highlight, online: { status: 'idle', rows: [] }, ranked: { status: 'idle', rows: [] }, daily: { status: 'idle', rows: [] } };
       this.lbView = view;
       this._setState('leaderboard');
+      if (tab === 'daily') this._loadDailyTab();
       if (this.leaderboard.online) {
         view.online.status = 'loading';
         Promise.resolve(after)
@@ -5398,6 +5600,18 @@ const __mod_game = (() => {
       }
     }
 
+    /** Load the DAILY tab when it is opened (and refresh it when it is tapped again). */
+    _loadDailyTab() {
+      const view = this.lbView;
+      if (!this.dailyBoard.online) return;
+      if (view.daily.status === 'loading' || view.daily.status === 'ok') return;
+      view.daily.status = 'loading';
+      Promise.resolve(this.dailySend)
+        .then(() => this.dailyBoard.fetchOnline())
+        .then((rows) => { view.daily = rows ? { status: 'ok', rows } : { status: 'error', rows: [] }; })
+        .catch(() => { view.daily = { status: 'error', rows: [] }; });
+    }
+
     closeLeaderboard() {
       this._setState(this.lbView.from === 'gameover' ? 'gameover' : 'menu');
       this.stateTime = 1; // buttons work straight away
@@ -5406,6 +5620,12 @@ const __mod_game = (() => {
     updatePlaying(dt) {
       if (this.input.wasPressed('pause')) { this._setState('paused'); return; }
 
+      if (this.introHold > 0) {   // boss introduction: everything waits, only the effects play out
+        this.introHold -= dt;
+        this.banner.t += dt;
+        this.updateEffects(dt);
+        return;
+      }
       this.stageTime += dt;
       this.runTime += dt;
       this.banner.t += dt;
@@ -5433,7 +5653,7 @@ const __mod_game = (() => {
       if (this.input.wasPressed('bomb')) this.detonateBomb();
 
       // --- stage progression: timer -> boss -> cards -> next stage ------------
-      if (this.phase === 'stage' && this.stageTime >= CONFIG.stageDuration) this.startBoss();
+      if (this.phase === 'stage' && this.stageTime >= this.stageLen) this.startBoss();
       if (this.phase === 'clear') {
         this.upgradeDelay -= dt;
         if (this.upgradeDelay <= 0) { this.openUpgrade(); return; }
@@ -5443,7 +5663,7 @@ const __mod_game = (() => {
       this.spawner.update(
         dt, this.stage,
         {
-          intensity: Math.min(1, this.stageTime / CONFIG.stageDuration), difficulty: this.difficulty,
+          intensity: Math.min(1, this.stageTime / this.stageLen), difficulty: this.difficulty,
           playerX: this.player.x, lives: this.lives, hold: this.phase !== 'stage', freeze: this.rules.freezeActive,
           stagesCleared: this.stageIndex,
         },
